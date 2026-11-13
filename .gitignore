@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+jobs/
+config.json
+tests/out/
+# テスト用の写真（作業場の写真なので公開リポジトリには入れない。無ければ関係する検査は飛ばされる）
+tests/data/scrap_sample_01.png

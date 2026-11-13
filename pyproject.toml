@@ -1,0 +1,27 @@
+[project]
+name = "scrapnest"
+version = "0.2.0"
+description = "端材の写真から輪郭を起こし、部材 DXF を敷き詰めてレーザーカッター用 DXF を出力する"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "opencv-python-headless",
+    "numpy",
+    "scipy",
+    "shapely",
+    "ezdxf",
+    "pillow",
+    "pillow-heif",
+    "segno",
+]
+
+[dependency-groups]
+dev = ["pytest", "playwright", "httpx"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ScrapNest — 写真を送る</title>
+<style>
+  body { margin: 0; font-family: -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif; background: #f4f5f7; color: #1d2330;
+    min-height: 100vh; display: grid; place-content: center; padding: 24px; text-align: center; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { color: #556; line-height: 1.7; margin: 8px 0 20px; }
+  .btn { display: block; width: min(320px, 82vw); margin: 12px auto; padding: 18px; font-size: 18px; font-weight: 700; border-radius: 14px;
+    border: none; background: #2563eb; color: #fff; }
+  .btn.sub { background: #fff; color: #1d2330; border: 1px solid #c9d0db; font-weight: 500; }
+  #msg { min-height: 2.4em; font-size: 16px; margin-top: 18px; }
+  #msg.ok { color: #067647; font-weight: 700; }
+  #msg.bad { color: #b42318; }
+  input { display: none; }
+</style>
+</head>
+<body>
+  <div>
+    <h1>端材の写真を送る</h1>
+    <p>格子マットの上に板を置いて、<br>なるべく真上から撮ってください。</p>
+    <button class="btn" id="shoot">カメラで撮る</button>
+    <button class="btn sub" id="pick">写真を選ぶ</button>
+    <input type="file" id="cam" accept="image/*" capture="environment">
+    <input type="file" id="lib" accept="image/*">
+    <div id="msg"></div>
+  </div>
+<script>
+  const msg = document.getElementById("msg");
+  const say = (t, c = "") => { msg.textContent = t; msg.className = c; };
+  async function send(file) {
+    if (!file) return;
+    say("送っています…");
+    const fd = new FormData();
+    fd.append("file", file, file.name || "photo.jpg");
+    try {
+      const r = await fetch(location.pathname.replace(/\/$/, "") + "/upload", { method: "POST", body: fd });
+      if (!r.ok) throw new Error(r.status === 404 ? "この QR コードは古くなっています。PC の画面で開き直してください" : "送れませんでした");
+      say("送りました。PC の画面を見てください", "ok");
+    } catch (e) {
+      say(e.message || "送れませんでした", "bad");
+    }
+  }
+  for (const [btn, input] of [["shoot", "cam"], ["pick", "lib"]]) {
+    const el = document.getElementById(input);
+    document.getElementById(btn).onclick = () => el.click();
+    el.onchange = () => { send(el.files[0]); el.value = ""; };
+  }
+</script>
+</body>
+</html>
