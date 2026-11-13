@@ -14,10 +14,7 @@ PARTS = Path(__file__).resolve().parent / "data" / "parts"
 @pytest.fixture(scope="module", autouse=True)
 def _make_parts():
     import make_parts
-    PARTS.mkdir(parents=True, exist_ok=True)
-    for f in (make_parts.bracket_l, make_parts.flange, make_parts.slot_plate, make_parts.gusset,
-              make_parts.cover_cm, make_parts.mirrored_arc):
-        f()
+    make_parts.ensure()
 
 
 def load(name, unit=None):

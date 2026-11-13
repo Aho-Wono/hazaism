@@ -76,8 +76,7 @@ def test_transform_matches_dxf_writer(tmp_path):
     """敷き詰めで使う変換（反転 → 回転 → 移動）と、DXF に書き出す変換が同じであること。"""
     import make_parts
     from scrapnest.dxfio import writer
-    make_parts.OUT.mkdir(parents=True, exist_ok=True)
-    make_parts.bracket_l()
+    make_parts.ensure()
     part = reader.load_part(str(make_parts.OUT / "bracket_L.dxf"), "b")
     pl = engine.Placed(part=0, flip=True, angle=33.0, tx=12.5, ty=-7.25)
     want = engine.transform_polygon(part.polygon, pl.flip, pl.angle, pl.tx, pl.ty)
@@ -126,9 +125,7 @@ def test_scrap_outline_with_dxf_parts():
     shape = json.loads((DATA / "scrap_outline_01.json").read_text(encoding="utf-8"))
     container = go.shape_to_polygon(shape, 0.02)
     import make_parts
-    make_parts.OUT.mkdir(parents=True, exist_ok=True)
-    for f in (make_parts.bracket_l, make_parts.gusset, make_parts.slot_plate):
-        f()
+    make_parts.ensure()
     specs = [("bracket_L.dxf", 3, False), ("gusset.dxf", 4, True), ("slot_plate.dxf", 2, True)]
     parts = [engine.NestPart(i, reader.load_part(str(make_parts.OUT / n), n).polygon, qty=q, allow_flip=f)
              for i, (n, q, f) in enumerate(specs)]

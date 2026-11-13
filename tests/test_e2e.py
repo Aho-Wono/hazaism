@@ -57,9 +57,7 @@ def _stop_server(proc):
 @pytest.fixture(scope="module")
 def home(tmp_path_factory):
     import make_parts
-    PARTS.mkdir(parents=True, exist_ok=True)
-    for f in (make_parts.bracket_l, make_parts.flange, make_parts.slot_plate, make_parts.gusset, make_parts.cover_cm, make_parts.mirrored_arc):
-        f()
+    make_parts.ensure()
     OUT.mkdir(exist_ok=True)
     return tmp_path_factory.mktemp("home")
 

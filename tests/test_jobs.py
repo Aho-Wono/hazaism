@@ -107,8 +107,7 @@ def test_api_outline_boolean_and_validation(client):
 
 def test_api_parts_and_export_errors(client, tmp_path):
     import make_parts
-    make_parts.OUT.mkdir(parents=True, exist_ok=True)
-    make_parts.flange()
+    make_parts.ensure()
     data = (make_parts.OUT / "flange.dxf").read_bytes()
     r = client.post("/api/parts", files=[("files", ("flange.dxf", data, "application/dxf")), ("files", ("bad.dxf", b"not a dxf", "application/dxf"))]).json()
     assert [p["name"] for p in r["added"]] == ["flange.dxf"] and [e["name"] for e in r["errors"]] == ["bad.dxf"]
@@ -155,8 +154,7 @@ def test_api_photo_and_manual_calibration(client):
 
 def test_reset_and_version(client):
     import make_parts
-    make_parts.OUT.mkdir(parents=True, exist_ok=True)
-    make_parts.flange()
+    make_parts.ensure()
     data = (make_parts.OUT / "flange.dxf").read_bytes()
     client.post("/api/parts", files=[("files", ("flange.dxf", data, "application/dxf"))])
     assert len(client.post("/api/reset", json={"keep_parts": True}).json()["parts"]) == 1
@@ -175,9 +173,7 @@ def test_update_version_compare():
 def test_restore_keeps_parts_when_photo_is_broken(jobs):
     """前回の写真が壊れていても、登録した部材は残る。古い番号のファイルが残っていても正しい中身で読む。"""
     import make_parts
-    make_parts.OUT.mkdir(parents=True, exist_ok=True)
-    make_parts.flange()
-    make_parts.gusset()
+    make_parts.ensure()
     job = jobs.Job()
     pdir = jobs.JOB_DIR / "parts"
     pdir.mkdir(parents=True, exist_ok=True)

@@ -96,8 +96,20 @@ def mirrored_arc():
     doc.saveas(OUT / "mirrored_arc.dxf")
 
 
+FILES = {"bracket_L.dxf": bracket_l, "flange.dxf": flange, "slot_plate.dxf": slot_plate, "gusset.dxf": gusset,
+         "cover_cm.dxf": cover_cm, "mirrored_arc.dxf": mirrored_arc}
+
+
+def ensure():
+    """無いファイルだけ作る（作るたびに日時などが変わって、リポジトリに無駄な差分が出るのを避ける）。"""
+    OUT.mkdir(parents=True, exist_ok=True)
+    for name, f in FILES.items():
+        if not (OUT / name).exists():
+            f()
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
-    for f in (bracket_l, flange, slot_plate, gusset, cover_cm, mirrored_arc):
+    for f in FILES.values():
         f()
     print("wrote", sorted(p.name for p in OUT.glob("*.dxf")))
