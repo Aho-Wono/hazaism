@@ -6,7 +6,8 @@
 param(
     [string]$Repo = "Aho-Wono/scrapnest",
     [string]$Branch = "main",
-    [string]$Root = (Split-Path -Parent $PSScriptRoot)
+    [string]$Root = (Split-Path -Parent $PSScriptRoot),
+    [string]$ZipUrl = ""        # 空なら GitHub の最新版。検査のときだけ別の場所を指定する
 )
 $ErrorActionPreference = "Stop"
 
@@ -39,7 +40,8 @@ try {
         New-Item -ItemType Directory -Path $tmp | Out-Null
         try {
             $zip = Join-Path $tmp "scrapnest.zip"
-            Invoke-WebRequest -Uri "https://github.com/$Repo/archive/refs/heads/$Branch.zip" -OutFile $zip -UseBasicParsing
+            if (-not $ZipUrl) { $ZipUrl = "https://github.com/$Repo/archive/refs/heads/$Branch.zip" }
+            Invoke-WebRequest -Uri $ZipUrl -OutFile $zip -UseBasicParsing
             Expand-Archive -Path $zip -DestinationPath $tmp -Force
             $src = Get-ChildItem -Path $tmp -Directory | Select-Object -First 1
             if (-not $src -or -not (Test-Path (Join-Path $src.FullName "pyproject.toml"))) {
