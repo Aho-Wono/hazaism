@@ -158,6 +158,7 @@ async function doExport(overwrite = false) {
     }
     $("#in-path").value = r.path;
     box.replaceChildren(msgHtml("ok", `出力しました（部材 ${r.placed} 個、図形 ${r.entities} 個）`));
+    if (r.warning) box.appendChild(msgHtml("warn", r.warning));
     const d = document.createElement("div");
     d.className = "row";
     d.innerHTML = `<div class="url">${esc(r.path)}</div><button id="btn-open-folder">フォルダーを開く</button>`;

@@ -170,3 +170,25 @@ def test_update_version_compare():
     from scrapnest import update
     assert update.is_newer("0.2.1", "0.2.0") and update.is_newer("0.10.0", "0.9.9") and update.is_newer("1.0", "0.9.9")
     assert not update.is_newer("0.2.0", "0.2.0") and not update.is_newer("0.1.9", "0.2.0") and not update.is_newer(None, "0.2.0")
+
+
+def test_restore_keeps_parts_when_photo_is_broken(jobs):
+    """前回の写真が壊れていても、登録した部材は残る。古い番号のファイルが残っていても正しい中身で読む。"""
+    import make_parts
+    make_parts.OUT.mkdir(parents=True, exist_ok=True)
+    make_parts.flange()
+    make_parts.gusset()
+    job = jobs.Job()
+    pdir = jobs.JOB_DIR / "parts"
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "1.dxf").write_bytes((make_parts.OUT / "gusset.dxf").read_bytes())      # 前の作業の残り
+    e = job.add_part("flange.dxf", (make_parts.OUT / "flange.dxf").read_bytes())
+    assert e.id == 1
+    (jobs.JOB_DIR / "photo.bin").write_bytes(b"broken")
+    meta = json.loads((jobs.JOB_DIR / "state.json").read_text(encoding="utf-8"))
+    meta["photo_info"] = {"ok": True, "candidates": []}
+    (jobs.JOB_DIR / "state.json").write_text(json.dumps(meta), encoding="utf-8")
+    back = jobs.Job.restore()
+    assert [p.part.name for p in back.parts] == ["flange.dxf"]
+    assert back.parts[0].part.area == pytest.approx(e.part.area)
+    assert back.photo is None and back.next_part_id == 2

@@ -242,8 +242,17 @@ def create_app(restore: bool = True) -> FastAPI:
         except OSError as ex:
             bad(f"書き込めません: {ex}")
         j.settings.update({"out_dir": str(p.parent), "out_name": p.name, "include_scrap": include, "scrap_color": color})
+        warning = None
+        if include:
+            used = set()
+            for i in {pl.part for pl in placements}:
+                used |= writer.entity_colors(j.parts[i].part)
+            if color in used:
+                warning = ("部材の線にも端材の輪郭と同じ色が使われています。加工ソフトで色ごとに分けると、"
+                           "部材の一部まで「加工なし」になってしまうので、輪郭の色を変えて出力し直してください。")
         jobs.save_settings(j.settings)
-        return {"ok": True, "path": str(p), "entities": info["entities"], "extents": info["extents"], "placed": len(placements)}
+        return {"ok": True, "path": str(p), "entities": info["entities"], "extents": info["extents"], "placed": len(placements),
+                "warning": warning}
 
     @app.post("/api/browse")
     def browse(req: dict = Body(default={})):

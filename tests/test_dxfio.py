@@ -150,3 +150,9 @@ def test_scrap_outline_layer(tmp_path):
     writer.write_layout(str(out), [part], [writer.Placement(0, False, 0, 50, 40)], scrap_shape=shape, scrap_color=1)
     assert [e.dxf.color for e in ezdxf.readfile(str(out)).modelspace() if e.dxf.layer == writer.SCRAP_LAYER] == [1]
     assert any(abs(b) > 0.1 for *_, b in scrap[0].get_points("xyb"))
+
+
+def test_entity_colors():
+    p = load("bracket_L.dxf")          # レイヤー CUT（色 1）に BYLAYER の線
+    assert writer.entity_colors(p) == {1}
+    assert writer.entity_colors(load("flange.dxf")) == {7}

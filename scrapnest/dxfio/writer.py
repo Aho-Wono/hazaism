@@ -30,6 +30,17 @@ class Placement:
     ty: float
 
 
+def entity_colors(part: Part) -> set[int]:
+    """部材の線の色（AutoCAD の色番号）。色がレイヤー任せ（BYLAYER）の線は、そのレイヤーの色を数える。"""
+    out = set()
+    for e in part.entities:
+        c = e.dxf.get("color", 256)
+        if c == 256:
+            c = part.layers.get(e.dxf.get("layer", "0"), {}).get("color", 7)
+        out.add(abs(int(c)))
+    return out
+
+
 def output_matrix(origin=(0.0, 0.0), angle_deg: float = 0.0) -> Matrix44:
     """アプリ内の座標 → 出力座標。origin が (0, 0) に、angle_deg の方向が +X になる。"""
     return Matrix44.chain(

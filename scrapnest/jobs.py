@@ -387,7 +387,8 @@ class Job:
                 for e in self.parts:
                     f = pdir / f"{e.id}.dxf"
                     keep.add(f.name)
-                    if not f.exists():
+                    # 同じ番号の古いファイルが残っていることがあるので、中身が違えば書き直す
+                    if not f.exists() or f.stat().st_size != len(e.data) or f.read_bytes() != e.data:
                         f.write_bytes(e.data)
                 for f in pdir.glob("*.dxf"):
                     if f.name not in keep:
@@ -419,11 +420,28 @@ class Job:
 
     @classmethod
     def restore(cls) -> "Job":
+        """前回の作業を読み込む。部材・輪郭・写真はそれぞれ別に読み、どれかが読めなくても他は残す。"""
         job = cls()
         try:
             meta = json.loads((JOB_DIR / "state.json").read_text(encoding="utf-8"))
         except Exception:
-            return job
+            meta = {}
+        try:
+            job.next_part_id = int(meta.get("next_part_id", 1))
+        except (TypeError, ValueError):
+            pass
+        for pm in meta.get("parts", []):
+            try:
+                f = JOB_DIR / "parts" / f"{pm['id']}.dxf"
+                data = f.read_bytes()
+                part = reader.load_part_bytes(data, pm["name"], pm.get("unit"))
+                job.parts.append(PartEntry(id=int(pm["id"]), part=part, data=data, qty=int(pm.get("qty", 1)),
+                                           no_flip=bool(pm.get("no_flip", False)), rotation=pm.get("rotation", "free")))
+            except Exception:
+                continue          # この部材だけあきらめる
+        if job.parts:
+            job.next_part_id = max(job.next_part_id, max(e.id for e in job.parts) + 1)
+        job.outline, job.result = meta.get("outline"), meta.get("result")
         try:
             photo = JOB_DIR / "photo.bin"
             if photo.exists() and meta.get("photo_info"):
@@ -439,18 +457,10 @@ class Job:
                     job.rect = vsegment.Rectified(image=img, valid=np.full(img.shape[:2], 255, np.uint8),
                                                   px_per_mm=rm["px_per_mm"], u0=rm["u0"], v0=rm["v0"], pitch_mm=rm["pitch_mm"])
                     job.rect_version = 1
-            job.outline, job.result = meta.get("outline"), meta.get("result")
-            job.next_part_id = int(meta.get("next_part_id", 1))
-            for pm in meta.get("parts", []):
-                f = JOB_DIR / "parts" / f"{pm['id']}.dxf"
-                if not f.exists():
-                    continue
-                data = f.read_bytes()
-                part = reader.load_part_bytes(data, pm["name"], pm.get("unit"))
-                job.parts.append(PartEntry(id=pm["id"], part=part, data=data, qty=pm.get("qty", 1),
-                                           no_flip=pm.get("no_flip", False), rotation=pm.get("rotation", "free")))
         except Exception:
-            return cls()
+            # 写真が読めなければ、写真まわりだけ捨てる（部材は残す）
+            job.photo = job.image = job.rect = job.rect_jpeg = job.pose = None
+            job.photo_info, job.candidates, job.outline, job.result = None, [], None, None
         return job
 
     def reset(self, keep_parts: bool = False) -> None:
