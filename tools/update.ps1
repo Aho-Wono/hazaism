@@ -21,9 +21,10 @@ try {
     $before = Get-AppVersion $Root
     Write-Host "ScrapNest を更新します（いまの版: v$before）"
 
-    # 起動中だと、ライブラリのファイルを入れ替えられないことがある
+    # 起動中だと、ライブラリのファイルを入れ替えられないことがある（このフォルダーから起動したものだけを見る）
+    $venv = (Join-Path $Root ".venv").ToLower()
     $running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match '-m\s+scrapnest' }
+        Where-Object { $_.CommandLine -and ($_.CommandLine -match '-m\s+scrapnest') -and $_.CommandLine.ToLower().Contains($venv) }
     if ($running) { throw "ScrapNest が起動中です。ScrapNest の黒いウィンドウを閉じてから、もう一度実行してください。" }
 
     $git = Get-Command git -ErrorAction SilentlyContinue
