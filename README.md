@@ -125,6 +125,9 @@ SmartDIYs Cutter は、DXF のレイヤーではなく**線の色ごと**にレ�
 
 ## 開発者向け
 
+今後の予定（レーザー用 PC 1 台で撮影から切断まで済ませる）と、これまでに分かった注意点は
+[docs/handoff-laser-pc.md](docs/handoff-laser-pc.md) にまとめてあります。
+
 しくみ: 画面は HTML と JavaScript、計算は Python です。Python は [Pyodide](https://pyodide.org/)（ブラウザの中で動く Python）で、
 利用者のブラウザの中で動きます。サーバーはなく、GitHub Pages は静的なファイルを配るだけです。
 
