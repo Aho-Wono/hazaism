@@ -52,7 +52,8 @@ def test_decode_unsupported_image(jobs):
 
 def test_settings_roundtrip(jobs):
     s = jobs.load_settings()
-    assert s["pitch_mm"] == 10.0 and s["spacing_mm"] == 3.0
+    assert s["pitch_mm"] == 10.0
+    assert (s["spacing_mm"], s["margin_mm"], s["angle_step"], s["time_limit"]) == (0.5, 1.5, 2.0, 10.0)   # 敷き詰めの初期値
     s["spacing_mm"] = 1.5
     s["unknown_key"] = 1
     jobs.save_settings(s)
