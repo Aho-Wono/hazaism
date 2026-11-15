@@ -1,6 +1,7 @@
 // 画面全体で共有するもの（状態・図の入れ物・小道具）
 
 import { $, svg } from "./api.js";
+import { imageUrl } from "./backend.js";
 import { Viewport } from "./viewport.js";
 
 // 作業の状態。サーバーの /api/state と同じ形
@@ -45,17 +46,19 @@ export function setHint(text) {
   $("#stage-hint").textContent = text || "";
 }
 
-// 補正画像（真上から見た写真）を、mm の図の背景に置く
+// 補正画像（真上から見た写真）を、mm の図の背景に置く。画像は作業スレッドから受け取るので、届いたら表示する
 export function drawRectImage(opacity = 1) {
   const r = S.photo && S.photo.rect;
   if (!r) return;
-  svg("image", {
-    href: `/api/photo/rect.jpg?v=${r.version}`,
+  const el = svg("image", {
     x: 0, y: 0, width: r.width_mm, height: r.height_mm,
     transform: `translate(0 ${r.height_mm}) scale(1 -1)`,     // 図は y が上向きなので、画像だけ上下を戻す
     preserveAspectRatio: "none", opacity,
     style: "image-rendering: auto; pointer-events: none",
   }, layers.image);
+  imageUrl("/api/photo/rect.jpg", `${r.version}-${r.width_mm}-${r.height_mm}`).then((url) => {
+    if (url) el.setAttribute("href", url);
+  });
 }
 
 export const PART_COLORS = ["#60a5fa", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#fb923c", "#22d3ee", "#a3e635", "#f87171", "#94a3b8"];

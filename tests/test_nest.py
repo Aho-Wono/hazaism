@@ -136,27 +136,43 @@ def test_scrap_outline_with_dxf_parts():
     assert layout.placed_area == pytest.approx(sum(parts[pl.part].polygon.area for pl in layout.placements))
 
 
-def test_background_job_runs_and_stops():
+def test_workers_from_prepared_payload():
+    """ブラウザと同じ流れ: prepare() のデータで作業スレッドを 2 本作り、少しずつ回して、良いほうを採る。"""
+    import json as _json
     container = box(0, 0, 150, 90)
     parts = [engine.NestPart(7, box(0, 0, 40, 25), qty=6), engine.NestPart(9, Point(0, 0).buffer(12), qty=4)]
-    prm = params(time_limit=30.0, workers=2)
-    job = engine.NestJob(container, parts, prm)
-    job.start()
-    import time
-    t0 = time.time()
-    while time.time() - t0 < 40:
-        best, runs, running = job.snapshot()
-        if best is not None and runs >= 3:
-            break
-        time.sleep(0.3)
-    job.stop()
-    job.wait(15)
-    best, runs, running = job.snapshot()
-    assert not running and job.error is None
-    assert time.time() - t0 < 30, "止めたらすぐ終わるはず"
-    check(container, parts, best, prm)
-    assert len(best.placements) >= 8
-    assert {pl.part for pl in best.placements} <= {7, 9}
+    prm = params(time_limit=30.0)
+    payload = engine.prepare(container, parts, prm)
+    workers = [engine.NestWorker(payload, wid) for wid in range(2)]
+    best = None
+    for _ in range(4):
+        for w in workers:
+            out = w.run_for(0.2)
+            _json.dumps(out)                     # 画面へ送れる形（JSON にできる）
+            if out["best"] and (best is None or out["best"]["key"] > best["key"]):
+                best = out["best"]
+    assert best is not None and all(w.runs >= 4 for w in workers)
+    layout = engine.Layout(placements=engine.placements_from_dicts(best["placements"]), placed_area=best["placed_area"])
+    check(container, parts, layout, prm)
+    assert len(layout.placements) >= 8
+    assert {pl.part for pl in layout.placements} <= {7, 9}
+    # 2 本は違う乱数で探している（同じ結果ばかりにならない）
+    assert workers[0].rng.random() != workers[1].rng.random()
+
+
+def test_measure_reports_actual_gaps():
+    container = box(0, 0, 100, 100)
+    polys = {0: box(0, 0, 20, 20)}
+    P = engine.Placed
+    m = verify.measure(container, polys, [P(0, False, 0, 5, 7), P(0, False, 0, 30, 7)])
+    assert m["min_spacing"] == pytest.approx(5.0) and m["min_margin"] == pytest.approx(5.0)
+    m1 = verify.measure(container, polys, [P(0, False, 0, 40, 40)])
+    assert m1["min_spacing"] is None and m1["min_margin"] == pytest.approx(40.0)
+    assert verify.measure(container, polys, []) == {"min_spacing": None, "min_margin": None}
+    # 遠く離れた 2 個（50 mm 以上）でも測れる
+    big = box(0, 0, 400, 100)
+    m2 = verify.measure(big, polys, [P(0, False, 0, 5, 5), P(0, False, 0, 300, 5)])
+    assert m2["min_spacing"] == pytest.approx(275.0)
 
 
 def test_verify_detects_violations():

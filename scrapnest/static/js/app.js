@@ -1,6 +1,7 @@
 // 画面全体の流れ（ステップの切り替え）と、ステップ 1: 写真
 
-import { $, $$, api, fmt, svg, toast, withBusy } from "./api.js";
+import { $, $$, api, fmt, setBusyText, svg, toast, withBusy } from "./api.js";
+import { imageUrl, site, startCore } from "./backend.js";
 import { S, clearLayers, initCtx, layers, msgHtml, nav, screenLabel, setHint, vp } from "./ctx.js";
 import { enterExport, initExport, leaveExport, resetExportFrame } from "./export.js";
 import { enterNest, initNest, leaveNest } from "./nest-view.js";
@@ -47,7 +48,7 @@ function goto(step) {
 }
 
 // ---- ステップ 1: 写真 ----
-const P = { active: false, calib: null };
+const P = { active: false, calib: null, photoSeq: 0 };
 
 function enterPhoto() {
   P.active = true;
@@ -59,8 +60,10 @@ function enterPhoto() {
     setHint("写真を選ぶか、ここにドラッグ＆ドロップしてください");
     return;
   }
-  svg("image", { href: `/api/photo/preview.jpg?t=${Date.now()}`, x: 0, y: 0, width: S.photo.width, height: S.photo.height,
+  const img = svg("image", { x: 0, y: 0, width: S.photo.width, height: S.photo.height,
     preserveAspectRatio: "none", style: "pointer-events: none" }, layers.image);
+  imageUrl("/api/photo/preview.jpg", `${S.photo.width}x${S.photo.height}-${S.photo.rect ? S.photo.rect.version : 0}-${P.photoSeq}`)
+    .then((url) => { if (url) img.setAttribute("href", url); });
   drawPhotoOverlay();
   vp.fit(0, 0, S.photo.width, S.photo.height);
 }
@@ -116,6 +119,7 @@ function renderPhotoInfo() {
 
 function adoptPhoto(info) {
   S.photo = info;
+  P.photoSeq++;
   S.result = null;
   resetOutline();
   resetExportFrame();
@@ -125,11 +129,37 @@ function adoptPhoto(info) {
   if (info.ok) toast("写真を読み込みました。格子の線が写真の線に重なっているか確認してください", "ok", 5000);
 }
 
+// ブラウザで画像を開いて JPEG にする（Python で読めない形式、たとえば HEIC 用。開けるかはブラウザによる）
+async function toJpeg(file) {
+  const bmp = await createImageBitmap(file);
+  const c = new OffscreenCanvas(bmp.width, bmp.height);
+  c.getContext("2d").drawImage(bmp, 0, 0);
+  bmp.close();
+  const blob = await c.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+  return new File([blob], (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
+}
+
 async function uploadPhoto(file) {
-  const fd = new FormData();
-  fd.append("file", file, file.name || "photo.jpg");
+  const send = (f) => {
+    const fd = new FormData();
+    fd.append("file", f, f.name || "photo.jpg");
+    return api("POST", "/api/photo", fd);
+  };
   try {
-    adoptPhoto(await withBusy("写真を解析しています…（10〜20 秒かかります）", () => api("POST", "/api/photo", fd)));
+    adoptPhoto(await withBusy("写真を解析しています…（20 秒ほどかかります）", async () => {
+      try {
+        return await send(file);
+      } catch (e) {
+        if (e.code !== "unsupported_image") throw e;
+        let jpg;
+        try {
+          jpg = await toJpeg(file);
+        } catch (e2) {
+          throw new Error("この形式の写真は読めません（HEIC なら JPEG に変換してから読み込んでください）");
+        }
+        return await send(jpg);
+      }
+    }));
   } catch (e) {
     toast(e.message, "bad", 6000);
   }
@@ -165,36 +195,6 @@ function initPhoto() {
       toast(e.message, "bad", 6000);
     }
   };
-
-  // スマホから送る
-  const dlg = $("#dlg-mobile");
-  let pollTimer = null;
-  const stopPoll = () => { clearInterval(pollTimer); pollTimer = null; };
-  $("#btn-mobile").onclick = async () => {
-    try {
-      const r = await api("POST", "/api/mobile/start");
-      $("#qr").innerHTML = r.qr;
-      $("#mobile-url").textContent = r.url;
-      dlg.showModal();
-      stopPoll();
-      pollTimer = setInterval(async () => {
-        try {
-          const s = await api("GET", "/api/mobile/poll");
-          if (!s.waiting) return;
-          stopPoll();
-          dlg.close();
-          adoptPhoto(await withBusy("スマホから届いた写真を解析しています…", () => api("POST", "/api/photo/inbox")));
-        } catch (e) {
-          stopPoll();
-          toast(e.message, "bad", 6000);
-        }
-      }, 1200);
-    } catch (e) {
-      toast(e.message, "bad");
-    }
-  };
-  $("#btn-mobile-close").onclick = () => dlg.close();
-  dlg.addEventListener("close", stopPoll);
 }
 
 // ---- ドラッグ＆ドロップと貼り付け ----
@@ -229,8 +229,34 @@ function initDrop() {
 }
 
 // ---- 起動 ----
+async function loadPython() {
+  // 初回は Python とライブラリ（数十 MB）を読み込むので、進み具合を出す
+  const busy = $("#busy");
+  busy.hidden = false;
+  busy.classList.add("loading");
+  setBusyText("準備しています…");
+  const bar = $("#busy-bar");
+  try {
+    await startCore((m) => {
+      setBusyText(m.text + (m.pct < 100 ? "（初回は 1 分ほどかかります）" : ""));
+      if (bar) bar.style.width = `${m.pct}%`;
+    });
+  } finally {
+    busy.hidden = true;
+    busy.classList.remove("loading");
+  }
+}
+
+function registerServiceWorker() {
+  // 一度読み込んだファイルをブラウザに残して、次から速く開けるようにする（オフラインでも開ける）
+  if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+    navigator.serviceWorker.register("sw.js").catch((e) => console.warn("service worker", e));
+  }
+}
+
 async function main() {
   initCtx();
+  registerServiceWorker();
   nav.goto = goto;
   nav.refresh = refresh;
   initPhoto();
@@ -251,7 +277,7 @@ async function main() {
       // 部材の一覧は、サーバーに残っているものをそのまま表示する（画面とサーバーで食い違わないように）
       Object.assign(S, { settings: st.settings, photo: null, outline: null, candIndex: null, parts: st.parts || [], result: null });
       resetExportFrame();
-      $("#in-path").value = "";
+      $("#in-filename").value = "";
       LEAVE[S.step]();
       S.step = "photo";
       $$(".pane").forEach((p) => (p.hidden = p.dataset.pane !== "photo"));
@@ -264,17 +290,15 @@ async function main() {
   $("#btn-reset-keep").onclick = () => doReset(true);
   $("#btn-reset-all").onclick = () => doReset(false);
 
-  // 版の表示と、新しい版のお知らせ
-  api("GET", "/api/version").then((v) => {
-    $("#version").textContent = "v" + v.version;
-    if (v.update) {
-      const el = $("#update-note");
-      el.hidden = false;
-      el.textContent = `新しい版 v${v.latest} があります`;
-      el.title = "ScrapNest を終了して、フォルダーの update.bat を実行すると更新できます";
-      el.onclick = (e) => { e.preventDefault(); toast("ScrapNest を終了して、フォルダーの update.bat を実行すると更新できます", "", 7000); };
-    }
-  }).catch(() => {});
+  try {
+    await loadPython();
+  } catch (e) {
+    $("#busy").hidden = false;
+    setBusyText(e.message);
+    $(".spinner").hidden = true;
+    return;
+  }
+  $("#version").textContent = site.version ? `v${site.version}` : "";
 
   try {
     const st = await api("GET", "/api/state");

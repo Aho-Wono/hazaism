@@ -98,9 +98,11 @@ def _emit(msp, e, m: Matrix44) -> None:
         raise ValueError(f"unsupported entity: {t}")
 
 
-def write_layout(out_path: str, parts: list[Part], placements: list[Placement], *, scrap_shape: dict | None = None,
+def write_layout(out_path: str | None, parts: list[Part], placements: list[Placement], *, scrap_shape: dict | None = None,
                  scrap_color: int = 5, origin=(0.0, 0.0), angle_deg: float = 0.0, version: str = "R2010") -> dict:
-    """配置結果を DXF に書き出す。戻り値: {"entities": 要素数, "extents": (minx, miny, maxx, maxy)}。
+    """配置結果を DXF に書き出す。戻り値: {"entities": 要素数, "extents": (minx, miny, maxx, maxy), "data": DXF の中身}。
+
+    out_path が None なら、ファイルには書かず中身（bytes）だけを返す（ブラウザから保存するとき）。
 
     端材の輪郭は、レイヤーを分けるだけでなく、線そのものに色（scrap_color）を付ける。
     加工ソフトには DXF のレイヤーを見ず、線の色で加工条件を分けるものがある（SmartDIYs Cutter など）。
@@ -140,5 +142,18 @@ def write_layout(out_path: str, parts: list[Part], placements: list[Placement], 
         msp.reset_extents(lo, hi)
         doc.header["$EXTMIN"], doc.header["$EXTMAX"] = lo, hi
         extents = (ext.extmin.x, ext.extmin.y, ext.extmax.x, ext.extmax.y)
-    doc.saveas(out_path)
-    return {"entities": len(msp), "extents": extents}
+    if out_path is not None:
+        doc.saveas(out_path)
+        data = None
+    else:
+        import os
+        import tempfile
+        fd, tmp = tempfile.mkstemp(suffix=".dxf")
+        os.close(fd)
+        try:
+            doc.saveas(tmp)               # 文字コードなどの扱いを saveas と同じにするため、いったんファイルに書く
+            with open(tmp, "rb") as f:
+                data = f.read()
+        finally:
+            os.remove(tmp)
+    return {"entities": len(msp), "extents": extents, "data": data}

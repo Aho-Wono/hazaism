@@ -228,8 +228,18 @@ def erase_grid_lines(rect: Rectified, grid: Grid) -> tuple[np.ndarray, list, lis
     return np.clip(out, 0, 255).astype(np.uint8), lines[1], lines[0]
 
 
-def _ellipse(d: int) -> np.ndarray:
-    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))
+def _within(mask: np.ndarray, r: float) -> np.ndarray:
+    """mask（0 以外が対象）から距離 r 画素以内の画素（＝半径 r の円で太らせたもの）。
+
+    大きな円での cv2.dilate は、かかる時間が円の大きさに比例する。ブラウザ（WebAssembly）では高速化の命令が
+    使えず数十秒かかったので、時間が円の大きさによらない距離変換で同じことをする。
+    """
+    return cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE) <= r
+
+
+def _inside(mask: np.ndarray, r: float) -> np.ndarray:
+    """mask の縁から r 画素より内側の画素（＝半径 r の円で細らせたもの）。"""
+    return cv2.distanceTransform((mask != 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE) > r
 
 
 def segment(rect: Rectified, grid: Grid, sensitivity: float = 0.5) -> Segmentation:
@@ -240,7 +250,6 @@ def segment(rect: Rectified, grid: Grid, sensitivity: float = 0.5) -> Segmentati
     cell = rect.pitch_mm * rect.px_per_mm
     bg_seed, fg_seed, hidden, visible = _line_evidence(rect, grid)
     c = int(round(cell))
-    k = _ellipse(3 * c + 1)
     nolines, lines_x, lines_y = erase_grid_lines(rect, grid)
 
     # 粗い被覆領域: 近くの測定点のうち隠れているものの割合
@@ -254,8 +263,8 @@ def segment(rect: Rectified, grid: Grid, sensitivity: float = 0.5) -> Segmentati
     thr = float(np.clip(0.7 - 0.4 * sensitivity, 0.2, 0.8))
     coarse = cv2.resize((ratio > thr).astype(np.uint8) * 255, (W, H), interpolation=cv2.INTER_LINEAR) > 127
 
-    allowed = cv2.dilate(hidden, k) > 0       # 隠れた線から 1.5 マス以内だけを候補にする
-    core = cv2.erode(coarse.astype(np.uint8), _ellipse(2 * c + 1)) > 0
+    allowed = _within(hidden, 1.5 * c)        # 隠れた線から 1.5 マス以内だけを候補にする
+    core = _inside(coarse, c)
 
     gc = np.full((H, W), cv2.GC_BGD, np.uint8)
     gc[allowed] = cv2.GC_PR_BGD
@@ -280,6 +289,8 @@ def segment(rect: Rectified, grid: Grid, sensitivity: float = 0.5) -> Segmentati
         gs[cv2.resize(seed[y0:y1, x0:x1], size, interpolation=cv2.INTER_AREA) > 100] = val
     gs[cv2.resize(rect.valid[y0:y1, x0:x1], size, interpolation=cv2.INTER_NEAREST) == 0] = cv2.GC_BGD
     bgd, fgd = np.zeros((1, 65)), np.zeros((1, 65))
+    # GrabCut は OpenCV 共通の乱数で初期値を決めるので、先に何を動かしたかで結果が変わってしまう。種を固定する
+    cv2.setRNGSeed(20261111)
     try:
         cv2.grabCut(small, gs, None, bgd, fgd, 3, cv2.GC_INIT_WITH_MASK)
     except cv2.error:

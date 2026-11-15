@@ -2,6 +2,7 @@
 
 import { $, api, esc, fmt, toast, withBusy } from "./api.js";
 import { S, msgHtml, nav, partColor, setHint } from "./ctx.js";
+import { warmNest } from "./backend.js";
 import { polylinesD } from "./geom.js";
 
 let active = false;
@@ -120,6 +121,7 @@ export function initParts() {
 
 export function enterParts() {
   active = true;
+  warmNest();                 // 部材を選んでいるあいだに、敷き詰めの作業スレッドを起動しておく
   $("#parts-board").hidden = false;
   setHint("");
   render();

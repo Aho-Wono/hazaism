@@ -1,12 +1,10 @@
-"""画面を通しで操作する検査（Playwright の Chromium）。
+"""画面を通しで操作する検査（ブラウザ版。Playwright の Chromium で、ブラウザ内の Python を実際に動かす）。
 
-前提:  uv run playwright install chromium
-実行:  uv run pytest tests/test_e2e.py -q        （スクリーンショットは tests/out に出る）
+前提:  uv run playwright install chromium。Pyodide を CDN から読むのでネット接続が要る
+実行:  uv run pytest tests/test_e2e.py -q        （スクリーンショットと各段の時間は tests/out に出る）
 """
 import json
 import math
-import os
-import shutil
 import subprocess
 import sys
 import time
@@ -23,35 +21,28 @@ OUT = ROOT / "tests" / "out"
 PHOTO = ROOT / "tests" / "data" / "scrap_sample_01.png"
 PARTS = ROOT / "tests" / "data" / "parts"
 PORT = 8791
-BASE = f"http://127.0.0.1:{PORT}"
+BASE = f"http://127.0.0.1:{PORT}/"
+TIMES = {}          # 各段の所要時間 [秒]（遅さの目安。tests/out/timings.json に書く）
 
 # テスト用の写真は公開リポジトリに入れていない。無ければこのファイルの検査は飛ばす
 pytestmark = pytest.mark.skipif(not PHOTO.exists(), reason="tests/data/scrap_sample_01.png がありません")
 
 
-def _start_server(home: Path, fresh: bool):
-    env = dict(os.environ, SCRAPNEST_HOME=str(home), PYTHONIOENCODING="utf-8", SCRAPNEST_NO_UPDATE_CHECK="1")
-    args = [sys.executable, "-m", "scrapnest", "--port", str(PORT), "--no-browser"] + (["--fresh"] if fresh else [])
-    log = open(home / "server.log", "a", encoding="utf-8")
-    proc = subprocess.Popen(args, cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
-    for _ in range(80):
+def _start_server(site: Path):
+    """サイトを組み立てて、手元で配信する（python -m scrapnest と同じ）。"""
+    log = open(site.parent / "server.log", "a", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "scrapnest", "--port", str(PORT), "--no-browser", "--site", str(site)],
+                            cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+    for _ in range(120):
         try:
-            urllib.request.urlopen(BASE + "/api/state", timeout=1)
+            urllib.request.urlopen(BASE + "version.json", timeout=1)
             return proc
         except Exception:
             if proc.poll() is not None:
-                raise RuntimeError("サーバーが起動しません: " + (home / "server.log").read_text(encoding="utf-8", errors="replace")[-2000:])
+                raise RuntimeError("配信を始められません: " + (site.parent / "server.log").read_text(encoding="utf-8", errors="replace")[-2000:])
             time.sleep(0.5)
     proc.kill()
-    raise RuntimeError("サーバーが起動しません")
-
-
-def _stop_server(proc):
-    proc.terminate()
-    try:
-        proc.wait(8)
-    except Exception:
-        proc.kill()
+    raise RuntimeError("配信を始められません")
 
 
 @pytest.fixture(scope="module")
@@ -64,30 +55,47 @@ def home(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def server(home):
-    holder = {"proc": _start_server(home, fresh=True)}
-    yield holder
-    _stop_server(holder["proc"])
+    proc = _start_server(home / "site")
+    yield proc
+    proc.terminate()
+    try:
+        proc.wait(8)
+    except Exception:
+        proc.kill()
+    (OUT / "timings.json").write_text(json.dumps({k: round(v, 1) for k, v in TIMES.items()}, ensure_ascii=False, indent=2),
+                                      encoding="utf-8")
+
+
+def wait_ready(pg, timeout=240_000):
+    """ブラウザ内の Python の読み込みが終わるまで待つ。"""
+    pg.wait_for_function("document.querySelector('#version').textContent.startsWith('v')", timeout=timeout)
+    pg.wait_for_selector("#busy", state="hidden", timeout=timeout)
 
 
 @pytest.fixture(scope="module")
 def page(server):
     with pw_api.sync_playwright() as pw:
         browser = pw.chromium.launch()
-        pg = browser.new_page(viewport={"width": 1500, "height": 950})
+        ctx = browser.new_context(viewport={"width": 1500, "height": 950}, accept_downloads=True)
+        # 保存の画面（showSaveFilePicker）は自動で操作できないので、ダウンロードで受け取る
+        ctx.add_init_script("delete window.showSaveFilePicker")
+        pg = ctx.new_page()
         pg.errors = []
         pg.on("console", lambda m: pg.errors.append(f"[{m.type}] {m.text}") if m.type == "error" else None)
         pg.on("pageerror", lambda e: pg.errors.append(f"[pageerror] {e}"))
         pg.on("requestfailed", lambda r: pg.errors.append(f"[requestfailed] {r.method} {r.url}"))
         pg.on("dialog", lambda d: d.accept())
-        pg.goto(BASE + "/")
-        pg.wait_for_selector("#btn-pick-photo")
+        t = time.time()
+        pg.goto(BASE)
+        wait_ready(pg)
+        TIMES["起動（Python の読み込み）"] = time.time() - t
         yield pg
         browser.close()
 
 
 # ---- 小道具 ----
-JS_STATE = "async () => { const m = await import('/static/js/ctx.js'); return JSON.parse(JSON.stringify({outline: m.S.outline, step: m.S.step, result: m.S.result, parts: m.S.parts.map(p => ({id: p.id, name: p.name, qty: p.qty, no_flip: p.no_flip})), photo: m.S.photo && {ok: m.S.photo.ok, grid: m.S.photo.grid && {rms: m.S.photo.grid.rms_mm, tilt: m.S.photo.grid.tilt_deg}, n: m.S.photo.candidates.length}})); }"
-JS_CLIENT = """async ([x, y]) => { const m = await import('/static/js/ctx.js'); const vp = m.vp; const r = vp.svg.getBoundingClientRect();
+JS_STATE = "async () => { const m = await import('./js/ctx.js'); return JSON.parse(JSON.stringify({outline: m.S.outline, step: m.S.step, result: m.S.result, parts: m.S.parts.map(p => ({id: p.id, name: p.name, qty: p.qty, no_flip: p.no_flip})), photo: m.S.photo && {ok: m.S.photo.ok, grid: m.S.photo.grid && {rms: m.S.photo.grid.rms_mm, tilt: m.S.photo.grid.tilt_deg}, n: m.S.photo.candidates.length}})); }"
+JS_CLIENT = """async ([x, y]) => { const m = await import('./js/ctx.js'); const vp = m.vp; const r = vp.svg.getBoundingClientRect();
   return [r.left + vp.tx + vp.s * x, r.top + vp.ty + (vp.flipY ? -vp.s : vp.s) * y]; }"""
 
 
@@ -114,12 +122,10 @@ def drag_w(pg, a, b, steps=6):
 
 
 def outline_info(pg):
-    """サーバーに計算してもらった面積など（保存が済むまで少し待つ）。"""
+    """ブラウザ内の Python に計算してもらった面積など（保存が済むまで少し待つ）。"""
     pg.wait_for_timeout(700)
-    r = pg.evaluate("""async () => { const m = await import('/static/js/ctx.js');
-        const r = await fetch('/api/outline', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({shape: m.S.outline})});
-        return await r.json(); }""")
-    return r
+    return pg.evaluate("""async () => { const m = await import('./js/ctx.js'); const a = await import('./js/api.js');
+        return await a.api('POST', '/api/outline', {shape: m.S.outline}); }""")
 
 
 def n_vertices(shape):
@@ -132,15 +138,19 @@ def shot(pg, name):
 
 # ---- 検査 ----
 def test_1_photo(page):
+    t = time.time()
     page.set_input_files("#file-photo", str(PHOTO))
     page.wait_for_selector("#busy", state="visible")
     page.wait_for_selector("#busy", state="hidden", timeout=180_000)
+    TIMES["写真の解析"] = time.time() - t
     st = state(page)
     assert st["photo"]["ok"]
     assert st["photo"]["grid"]["rms"] < 0.3, "格子の当てはめ誤差が大きい"
     assert st["photo"]["n"] >= 1
     assert page.locator(".photo-grid line").count() > 50
     shot(page, "1_photo")
+    page.wait_for_function("document.querySelector('#layer-image image') && document.querySelector('#layer-image image').getAttribute('href')")
+    assert page.get_attribute("#layer-image image", "href").startswith("blob:")      # 写真は作業スレッドから受け取る
     page.click("#btn-photo-next")
     page.wait_for_selector(".h-vertex")
     assert state(page)["step"] == "outline"
@@ -297,9 +307,16 @@ def test_4_nest(page):
     page.click("#btn-parts-next")
     page.wait_for_selector("#btn-nest-start")
     page.select_option("#in-time", "10")
+    t = time.time()
     page.click("#btn-nest-start")
     page.wait_for_function("document.querySelector('#btn-nest-start').disabled === true")
-    page.wait_for_function("document.querySelector('#btn-nest-start').disabled === false", timeout=120_000)
+    # 計算中も数値とグラフが出る
+    page.wait_for_selector("#nest-chart svg", timeout=120_000)
+    running = page.inner_text("#nest-metrics")
+    assert "試した置き方" in running and "作業スレッド" in running, running
+    shot(page, "4_nest_running")
+    page.wait_for_function("document.querySelector('#btn-nest-start').disabled === false", timeout=240_000)
+    TIMES["敷き詰め（計算 10 秒の設定）"] = time.time() - t
     page.wait_for_timeout(500)
     st = state(page)
     res = st["result"]
@@ -309,15 +326,40 @@ def test_4_nest(page):
     assert not any(pl["flip"] for pl in res["placements"] if pl["part"] == bracket), "反転禁止の部材が反転している"
     for pid, (got, want) in res["counts"].items():
         assert got <= want
+    # 最適化の数値: 試した数・速さ・スレッド数・推移・実測の間隔と余白（設定以上）
+    m = res["metrics"]
+    assert m["runs"] >= m["workers"] >= 1 and m["runs_per_sec"] > 0 and 9.0 <= m["elapsed"] <= 25.0
+    assert m["history"] and m["history"][-1]["placed"] <= res["placed"] + res["dropped"]
+    assert all(b["utilization"] >= a["utilization"] for a, b in zip(m["history"], m["history"][1:])), "推移は良くなる一方のはず"
+    assert m["min_spacing"] is None or m["min_spacing"] >= res["spacing"] - 1e-3
+    assert m["min_margin"] >= res["margin"] - 1e-3
+    text = page.inner_text("#nest-metrics")
+    for label in ("経過時間", "試した置き方", "作業スレッド", "利用率", "置けた数", "残りの最大のかたまり", "最小の間隔（実測）", "最小の余白（実測）"):
+        assert label in text, label
+    assert page.locator("#nest-chart svg circle").count() == len(m["history"])
+    page.click("#nest-history summary")
+    assert page.locator("#nest-history-table tbody tr").count() == len(m["history"])
+    TIMES["1 秒あたりの試行数"] = m["runs_per_sec"]
+    TIMES["作業スレッドの数"] = m["workers"]
     shot(page, "4_nest")
     assert not page.errors, page.errors
+
+
+def save_dxf(page, home, name):
+    page.fill("#in-filename", name)
+    with page.expect_download(timeout=60_000) as dl:
+        page.click("#btn-export")
+    d = dl.value
+    out = home / "out" / d.suggested_filename
+    out.parent.mkdir(exist_ok=True)
+    d.save_as(out)
+    page.wait_for_selector("#export-result .msg.ok", timeout=30_000)
+    return out
 
 
 def test_5_export(page, home):
     page.click("#btn-nest-next")
     page.wait_for_selector("#btn-export")
-    out = home / "out" / "result.dxf"
-    out.parent.mkdir(exist_ok=True)
     # 最初は左上の角が原点: 全体が X のプラス側・Y のマイナス側に入る
     info0 = page.inner_text("#export-frame")
     assert "X 0.0 〜" in info0 and "〜 0.0 mm" in info0, info0
@@ -325,11 +367,10 @@ def test_5_export(page, home):
     # 向きを 90° 回して、原点を左下の角へ
     page.click("#btn-rot-p90")
     page.click('[data-corner="bl"]')
-    page.fill("#in-path", str(out))
-    page.click("#btn-export")
-    page.wait_for_selector("#export-result .msg.ok", timeout=30_000)
+    out = save_dxf(page, home, "result")          # 拡張子は付けてくれる
+    assert out.name == "result.dxf"
     shot(page, "5_export")
-    assert out.exists()
+    assert "ダウンロードしました" in page.inner_text("#export-result")
 
     st = state(page)
     doc = ezdxf.readfile(str(out))
@@ -358,79 +399,54 @@ def test_5_export(page, home):
     expect = sum(n_ent[id2name[pl["part"]]] for pl in st["result"]["placements"])
     assert len(msp) - len(scrap) == expect
 
-    # 同じ場所にもう一度出すと上書きの確認が出る（dialog は自動で OK）→ 書き直される
-    out.write_bytes(b"old")
-    page.click("#btn-export")
-    for _ in range(100):
-        if out.stat().st_size > 100:
-            break
-        page.wait_for_timeout(100)
-    assert out.stat().st_size > 100, "上書きされていない"
-    page.wait_for_selector("#busy", state="hidden")
-    page.wait_for_timeout(300)
-    assert ezdxf.readfile(str(out)).units == ezdxf.units.MM
+    # 輪郭を入れずに、別の名前でもう一度
+    page.uncheck("#in-include-scrap")
+    out2 = save_dxf(page, home, "parts_only.dxf")
+    assert not [e for e in ezdxf.readfile(str(out2)).modelspace() if e.dxf.layer == "SCRAP_OUTLINE"]
+    page.check("#in-include-scrap")
     assert not page.errors, page.errors
 
 
-def test_6_restart_restores(page, server, home):
-    """アプリを起動し直しても、続きから再開できる。"""
+def test_6_reload_restores(page):
+    """ページを開き直しても、続きから再開できる（作業はブラウザ内の保存領域に残っている）。"""
     before = state(page)
-    _stop_server(server["proc"])
-    server["proc"] = _start_server(home, fresh=False)
-    page.goto(BASE + "/")
-    page.wait_for_selector(".h-vertex", timeout=30_000)
+    t = time.time()
+    page.reload()
+    wait_ready(page)
+    page.wait_for_selector(".h-vertex", timeout=60_000)
+    TIMES["開き直し（2 回目の読み込み）"] = time.time() - t
     after = state(page)
     assert after["step"] == "outline"
     assert after["outline"] == before["outline"]
     assert after["parts"] == before["parts"]
     assert after["result"] and after["result"]["placements"] == before["result"]["placements"]
+    assert after["result"]["metrics"]["history"] == before["result"]["metrics"]["history"]
+    page.wait_for_function("document.querySelector('#layer-image image').getAttribute('href')")
     assert page.locator("#layer-image image").count() == 1
-    assert not page.errors, page.errors
-
-
-def test_7_mobile_upload(page):
-    """スマホ用の受け口: QR の URL に写真を送ると、PC 側で読み込まれる。"""
-    page.click('#steps [data-step="photo"]')
-    page.click("#btn-mobile")
-    page.wait_for_selector("#dlg-mobile[open]")
-    url = page.inner_text("#mobile-url")
-    assert "/m/" in url
-    # 合言葉が違うと 404
-    bad = url.rsplit("/", 1)[0] + "/wrong-token"
-    with pytest.raises(Exception):
-        urllib.request.urlopen(bad, timeout=5)
-    html = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
-    assert "カメラで撮る" in html
-    # 写真を送る（multipart）
-    data = PHOTO.read_bytes()
-    boundary = "----scrapnesttest"
-    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"p.png\"\r\nContent-Type: image/png\r\n\r\n").encode() \
-        + data + f"\r\n--{boundary}--\r\n".encode()
-    req = urllib.request.Request(url + "/upload", data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    assert urllib.request.urlopen(req, timeout=30).status == 200
-    page.wait_for_selector("#busy", state="visible", timeout=10_000)
-    page.wait_for_selector("#busy", state="hidden", timeout=180_000)
-    st = state(page)
-    assert st["step"] == "photo" and st["photo"]["ok"]
-    assert st["result"] is None, "新しい写真を読んだら、前の敷き詰め結果は消える"
+    # 2 回目からは、読み込んだファイルをブラウザに残してある（service worker）
+    cached = page.evaluate("async () => (await caches.keys()).sort()")
+    assert any(k.startswith("scrapnest-pyodide-") for k in cached) and "scrapnest-site" in cached, cached
     assert not page.errors, page.errors
 
 
 def test_8_reset_keeps_or_clears_parts(page):
-    """「最初から」で部材を残すか消すかを選べて、画面とサーバーで食い違わない。"""
+    """「最初から」で部材を残すか消すかを選べて、画面とブラウザ内の Python で食い違わない。"""
     n_before = len(state(page)["parts"])
     assert n_before == 6
-    server_parts = lambda: len(json.loads(urllib.request.urlopen(BASE + "/api/state").read())["parts"])
+    server_parts = lambda: page.evaluate("async () => (await (await import('./js/api.js')).api('GET', '/api/state')).parts.length")
     page.click("#btn-reset")
     page.wait_for_selector("#dlg-reset[open]")
     page.click("#btn-reset-keep")
     page.wait_for_timeout(500)
     st = state(page)
     assert st["step"] == "photo" and st["photo"] is None and st["outline"] is None
-    assert len(st["parts"]) == n_before == server_parts(), "部材は残る（画面にもサーバーにも）"
+    assert len(st["parts"]) == n_before == server_parts(), "部材は残る（画面にも Python 側にも）"
     page.click("#btn-reset")
     page.wait_for_selector("#dlg-reset[open]")
     page.click("#btn-reset-all")
     page.wait_for_timeout(500)
     assert len(state(page)["parts"]) == 0 == server_parts(), "部材も消える"
+    page.reload()
+    wait_ready(page)
+    assert len(state(page)["parts"]) == 0 and state(page)["photo"] is None, "開き直しても消えたまま"
     assert not page.errors, page.errors

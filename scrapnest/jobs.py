@@ -1,7 +1,8 @@
 """作業の状態（写真・輪郭・部材・敷き詰め結果）と、設定の記憶。
 
-このアプリは 1 台の PC で 1 人が使うものなので、作業は常に 1 つだけ持つ。
-ブラウザを開き直しても、アプリを起動し直しても続きから再開できるように、jobs/last に保存しておく。
+このアプリはブラウザの中（Pyodide）で 1 人が使うものなので、作業は常に 1 つだけ持つ。
+ページを開き直しても続きから再開できるように、HOME/jobs/last に保存しておく
+（ブラウザでは HOME=/data で、ブラウザ内の保存領域 IndexedDB につながっている）。
 """
 from __future__ import annotations
 
@@ -17,9 +18,9 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
-from .dxfio import reader
+from .dxfio import reader, writer
 from .geom import outline as go
-from .nest import engine
+from .nest import engine, verify
 from .vision import grid as vgrid
 from .vision import outline as voutline
 from .vision import segment as vsegment
@@ -41,7 +42,6 @@ DEFAULT_SETTINGS = {
     "use_holes": True,
     "include_scrap": True,
     "scrap_color": 5,           # 端材の輪郭の線の色（AutoCAD の色番号。5 = 青）
-    "out_dir": str(Path.home() / "Documents"),
     "out_name": "nest.dxf",
     "dxf_version": "R2010",
 }
@@ -66,9 +66,17 @@ def save_settings(s: dict) -> None:
     CONFIG_PATH.write_text(json.dumps({k: s[k] for k in DEFAULT_SETTINGS if k in s}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+class UnsupportedImage(ValueError):
+    """Pillow で読めない画像（HEIC など）。ブラウザ側で JPEG に直して送り直してもらう。"""
+
+
 def decode_photo(data: bytes) -> tuple[np.ndarray, float | None]:
     """写真のバイト列 → (BGR 画像, 焦点距離 [px] or None)。EXIF の向きを反映する。"""
-    im = Image.open(io.BytesIO(data))
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception as ex:
+        raise UnsupportedImage(f"この形式の画像は読めません: {ex}") from ex
     f35 = None
     try:
         exif = im.getexif()
@@ -133,8 +141,7 @@ class Job:
     outline: dict | None = None                        # いま編集中の輪郭（クライアントが送ってきたもの）
     parts: list[PartEntry] = field(default_factory=list)
     next_part_id: int = 1
-    nest_job: engine.NestJob | None = None
-    nest_request: dict | None = None
+    nest_request: dict | None = None                   # 敷き詰め中の条件（nest_prepare で作り、nest_finish で使う）
     result: dict | None = None                         # 敷き詰め結果（確定したもの）
     lock: threading.RLock = field(default_factory=threading.RLock)
 
@@ -288,8 +295,9 @@ class Job:
         self._persist()
 
     # ---- 敷き詰め ----
-    def start_nest(self, shape: dict, params: dict) -> None:
-        self.stop_nest(wait=True)
+    # 計算そのものはブラウザの作業スレッド（engine.NestWorker）で回す。ここでは準備と、終わったあとの検査をする
+    def nest_prepare(self, shape: dict, params: dict) -> tuple[dict, bytes]:
+        """敷き詰めの準備。戻り値: (画面で途中経過を出すための情報, 作業スレッドに配るデータ)。"""
         shape = go.normalize_shape(shape)
         msgs = go.validate(shape)
         if msgs:
@@ -306,59 +314,94 @@ class Job:
         prm = engine.NestParams(spacing=float(self.settings["spacing_mm"]), margin=float(self.settings["margin_mm"]),
                                 angle_step=float(self.settings["angle_step"]), time_limit=float(self.settings["time_limit"]),
                                 use_holes=bool(self.settings["use_holes"]))
-        job = engine.NestJob(container, nparts, prm)
+        t = time.time()
+        payload = engine.prepare(container, nparts, prm)
         with self.lock:
             self.outline = _round_shape(shape)
-            self.nest_job = job
-            self.nest_request = {"container": container, "polys": {p.index: p.polygon for p in nparts},
-                                 "qty": {p.index: p.qty for p in nparts}, "params": prm, "started": time.time()}
             self.result = None
-        job.start()
+            self.nest_request = {"container": container, "polys": {p.index: p.polygon for p in nparts},
+                                 "qty": {p.index: p.qty for p in nparts}, "params": prm}
+        self._persist()
+        meta = {"qty": {str(p.index): p.qty for p in nparts},
+                "part_area": {str(p.index): round(float(p.polygon.area), 3) for p in nparts},
+                "scrap_area": round(float(container.area), 1), "time_limit": prm.time_limit,
+                "spacing": prm.spacing, "margin": prm.margin, "prepare_s": round(time.time() - t, 2)}
+        return meta, payload
 
-    def stop_nest(self, wait: bool = False) -> None:
-        job = self.nest_job
-        if job is not None and job.running:
-            job.stop()
-            if wait:
-                job.wait(10.0)
-
-    def nest_status(self) -> dict:
-        from .nest import verify
-        job, req = self.nest_job, self.nest_request
-        if job is None or req is None:
-            return {"state": "idle", "result": self.result}
-        best, runs, running = job.snapshot()
+    def nest_finish(self, best: dict | None, stats: dict | None = None) -> dict:
+        """作業スレッドで見つかった最良の配置を、元の図形で検査して結果にまとめ、保存する。"""
+        req = self.nest_request
+        if req is None:
+            raise ValueError("敷き詰めの準備ができていません。もう一度「敷き詰める」を押してください")
         prm = req["params"]
-        if not running and req.get("final") is not None:
-            return req["final"]
-        out = {"state": "running" if running else "done", "runs": runs, "elapsed": round(time.time() - req["started"], 1),
-               "time_limit": prm.time_limit, "error": job.error, "result": None}
-        if best is not None:
-            placements = best.placements
-            dropped = []
-            if not running:      # 終わったら、元の図形で間隔と余白を確かめる
-                placements, dropped = verify.drop_invalid(req["container"], req["polys"], placements, prm.spacing, prm.margin)
-            counts: dict[int, int] = {}
-            for p in placements:
-                counts[p.part] = counts.get(p.part, 0) + 1
-            area = sum(req["polys"][p.part].area for p in placements)
-            res = {
-                "placements": [{"part": p.part, "flip": p.flip, "angle": p.angle, "tx": round(p.tx, 4), "ty": round(p.ty, 4)}
-                               for p in placements],
-                "counts": {str(k): [counts.get(k, 0), q] for k, q in req["qty"].items()},
-                "placed": len(placements), "requested": sum(req["qty"].values()),
-                "area": round(area, 1), "scrap_area": round(req["container"].area, 1),
-                "utilization": round(100 * area / req["container"].area, 1) if req["container"].area else 0.0,
-                "dropped": len(dropped), "spacing": prm.spacing, "margin": prm.margin,
-            }
-            out["result"] = res
-            if not running:
-                with self.lock:
-                    self.result = res
-                self._persist()
-        if not running:
-            req["final"] = out
-        return out
+        placements = engine.placements_from_dicts(best["placements"]) if best else []
+        placements, dropped = verify.drop_invalid(req["container"], req["polys"], placements, prm.spacing, prm.margin)
+        counts: dict[int, int] = {}
+        for p in placements:
+            counts[p.part] = counts.get(p.part, 0) + 1
+        area = sum(req["polys"][p.part].area for p in placements)
+        scrap = req["container"].area
+        stats = dict(stats or {})
+        measured = verify.measure(req["container"], req["polys"], placements)
+        metrics = {
+            "runs": int(stats.get("runs", 0)), "elapsed": float(stats.get("elapsed", 0.0)),
+            "workers": int(stats.get("workers", 0)), "history": stats.get("history", []),
+            "leftover": round(float(best.get("leftover", 0.0)), 1) if best else 0.0,
+            "min_spacing": None if measured["min_spacing"] is None else round(measured["min_spacing"], 2),
+            "min_margin": None if measured["min_margin"] is None else round(measured["min_margin"], 2),
+        }
+        metrics["runs_per_sec"] = round(metrics["runs"] / metrics["elapsed"], 2) if metrics["elapsed"] > 0 else 0.0
+        res = {
+            "placements": [{"part": p.part, "flip": p.flip, "angle": p.angle, "tx": round(p.tx, 4), "ty": round(p.ty, 4)}
+                           for p in placements],
+            "counts": {str(k): [counts.get(k, 0), q] for k, q in req["qty"].items()},
+            "placed": len(placements), "requested": sum(req["qty"].values()),
+            "area": round(area, 1), "scrap_area": round(scrap, 1),
+            "utilization": round(100 * area / scrap, 1) if scrap else 0.0,
+            "dropped": len(dropped), "spacing": prm.spacing, "margin": prm.margin, "metrics": metrics,
+        }
+        with self.lock:
+            self.result = res
+        self._persist()
+        return res
+
+    # ---- 出力 ----
+    def export(self, req: dict) -> tuple[dict, bytes]:
+        """敷き詰め結果を DXF にする。戻り値: (画面に出す情報, DXF の中身)。"""
+        res = self.result
+        if not res or not res.get("placements"):
+            raise ValueError("敷き詰め結果がありません")
+        index = {e.id: i for i, e in enumerate(self.parts)}
+        if any(pl["part"] not in index for pl in res["placements"]):
+            raise ValueError("敷き詰めのあとに部材が削除されています。敷き詰めをやり直してください")
+        placements = [writer.Placement(part=index[pl["part"]], flip=pl["flip"], angle=pl["angle"], tx=pl["tx"], ty=pl["ty"])
+                      for pl in res["placements"]]
+        origin = req.get("origin") or [0.0, 0.0]
+        include = bool(req.get("include_scrap", True))
+        color = int(req.get("scrap_color") or self.settings.get("scrap_color", 5))
+        if color not in writer.SCRAP_COLORS:
+            color = 5
+        name = str(req.get("name") or self.settings.get("out_name") or "nest.dxf").strip() or "nest.dxf"
+        name = "".join("_" if ch in '\\/:*?"<>|' else ch for ch in name)
+        if not name.lower().endswith(".dxf"):
+            name += ".dxf"
+        info = writer.write_layout(None, [e.part for e in self.parts], placements,
+                                   scrap_shape=self.outline if include else None, scrap_color=color,
+                                   origin=(float(origin[0]), float(origin[1])), angle_deg=float(req.get("angle", 0.0)),
+                                   version=self.settings.get("dxf_version", "R2010"))
+        self.settings.update({"out_name": name, "include_scrap": include, "scrap_color": color})
+        save_settings(self.settings)
+        warning = None
+        if include:
+            used = set()
+            for i in {pl.part for pl in placements}:
+                used |= writer.entity_colors(self.parts[i].part)
+            if color in used:
+                warning = ("部材の線にも端材の輪郭と同じ色が使われています。加工ソフトで色ごとに分けると、"
+                           "部材の一部まで「加工なし」になってしまうので、輪郭の色を変えて保存し直してください。")
+        meta = {"ok": True, "name": name, "entities": info["entities"], "extents": info["extents"],
+                "placed": len(placements), "warning": warning}
+        return meta, info["data"]
 
     # ---- 保存と復元 ----
     def state(self) -> dict:
@@ -415,8 +458,7 @@ class Job:
 
     def _invalidate(self) -> None:
         """輪郭や部材が変わったので、敷き詰め結果を捨てる。"""
-        self.stop_nest()
-        self.nest_job = self.nest_request = self.result = None
+        self.nest_request = self.result = None
 
     @classmethod
     def restore(cls) -> "Job":
@@ -465,11 +507,10 @@ class Job:
 
     def reset(self, keep_parts: bool = False) -> None:
         """写真・輪郭・敷き詰め結果を消す。keep_parts が False なら登録した部材も消す。"""
-        self.stop_nest()
         with self.lock:
             self.photo = self.image = self.grid = self.rect = self.seg = self.pose = self.rect_jpeg = None
             self.candidates, self.photo_info, self.outline, self.result = [], None, None, None
-            self.nest_job = self.nest_request = None
+            self.nest_request = None
             if not keep_parts:
                 self.parts = []
         try:

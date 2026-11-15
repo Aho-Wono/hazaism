@@ -12,11 +12,11 @@
 from __future__ import annotations
 
 import math
-import multiprocessing as mp
-import threading
+import pickle
+import sys
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import cv2
 import numpy as np
@@ -26,6 +26,7 @@ from shapely.geometry import MultiPolygon, Polygon, box
 from . import raster
 
 N_GRAVITY = 8
+IN_BROWSER = sys.platform == "emscripten"     # Pyodide（ブラウザ内の Python）。スレッドが使えず、メモリも控えめにする
 
 
 @dataclass
@@ -67,6 +68,11 @@ class Layout:
 
     def key(self):
         return (round(self.placed_area, 2), len(self.placements), round(self.leftover, 0))
+
+    def to_dict(self) -> dict:
+        """作業スレッドから画面へ送る形（JSON にできるものだけ）。"""
+        return {"placements": [asdict(p) for p in self.placements], "placed_area": self.placed_area,
+                "leftover": self.leftover, "key": list(self.key())}
 
 
 def transform_polygon(poly, flip: bool, angle: float, tx: float = 0.0, ty: float = 0.0):
@@ -137,7 +143,7 @@ class _Orient:
 
 
 class RasterNester:
-    FFT_CACHE_BYTES = 96_000_000
+    FFT_CACHE_BYTES = 32_000_000 if IN_BROWSER else 96_000_000
     MAX_ORIENTS = 160            # 1 部材あたり、1 回の貪欲配置で試す向きの上限
 
     def __init__(self, container, parts: list[NestPart], params: NestParams, orient_lists=None, bases=None):
@@ -249,8 +255,7 @@ class RasterNester:
             B[y0:y1, x0:x1] |= nfr[y0 - ys:y1 - ys, x0 - xs:x1 - xs]
 
     def all_bases(self, threads: int = 8) -> dict:
-        """すべての向きについて「端材だけに対する置けない位置」を先に計算する（子プロセスへ渡す用）。"""
-        from concurrent.futures import ThreadPoolExecutor
+        """すべての向きについて「端材だけに対する置けない位置」を先に計算する（作業スレッドへ渡す用）。"""
         keys = [(i, a, f) for i, lst in enumerate(self.orient_lists) for a, f in lst]
 
         def one(key):
@@ -260,6 +265,9 @@ class RasterNester:
             self._base(o)
             return key, (o.base, o.base_shape)
 
+        if IN_BROWSER or threads <= 1:          # ブラウザではスレッドを作れないので順番に
+            return dict(one(k) for k in keys)
+        from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=threads) as ex:
             return dict(ex.map(one, keys))
 
@@ -382,116 +390,52 @@ class RasterNester:
 
 
 # ---- 並列実行 ----------------------------------------------------------------------
+#
+# ブラウザでは、画面とは別の作業スレッド（Web Worker）を何本か立てて、それぞれで NestWorker を回す。
+#   1. prepare(): 向きの一覧と「端材だけに対する置けない位置」を 1 回だけ計算して、まとめて渡せる形にする
+#   2. 各作業スレッドで NestWorker(payload, 番号) を作り、run_for() を少しずつ呼ぶ（合間に「止めて」を受け取れる）
+#   3. 画面側が各スレッドの最良の結果を集めて、いちばん良いものを採る
 
-def _worker(wid, inbox, queue, stop):
-    try:
-        cv2.setNumThreads(1)          # プロセスの数だけ並列にするので、各プロセスの中は 1 スレッドにする
-        container, parts, params, orient_lists, bases, deadline = inbox.get()
-        nester = RasterNester(container, parts, params, orient_lists, bases)
-        rng = np.random.default_rng(params.seed * 1000 + wid)
-        best, run = None, 0
-        while not stop.is_set() and time.time() < deadline:
-            layout = nester.step(rng, run if wid == 0 else run + 1, best, g_offset=wid * 3)
-            run += 1
-            if best is None or layout.key() > best.key():
-                best = layout
-                queue.put(("best", wid, run, layout))
-            else:
-                queue.put(("tick", wid, run, None))
-        queue.put(("done", wid, run, None))
-    except Exception as ex:  # pragma: no cover - 子プロセスの異常は親へ伝える
-        import traceback
-        queue.put(("error", wid, 0, f"{ex}\n{traceback.format_exc()}"))
+def prepare(container, parts: list[NestPart], params: NestParams) -> bytes:
+    """作業スレッドに配るデータ。全スレッドで共通の重い計算はここで済ませる。"""
+    orient_lists = [orientations(p, params.angle_step) for p in parts]
+    bases = RasterNester(container, parts, params, orient_lists).all_bases()
+    return pickle.dumps({"container": container, "parts": parts, "params": params,
+                         "orient_lists": orient_lists, "bases": bases}, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-class NestJob:
-    """敷き詰め計算をバックグラウンドで走らせ、途中経過を取り出せるようにする。"""
+class NestWorker:
+    """1 本の作業スレッドで回す探索。番号ごとに乱数と寄せる方向を変えて、スレッドどうしで違う配置を探す。"""
 
-    def __init__(self, container, parts: list[NestPart], params: NestParams):
-        self.container, self.parts, self.params = container, parts, params
+    def __init__(self, payload: bytes, wid: int):
+        d = pickle.loads(payload)
+        if not IN_BROWSER:
+            cv2.setNumThreads(1)          # 並列はスレッドの数でするので、各スレッドの中は 1 本にする
+        self.nester = RasterNester(d["container"], d["parts"], d["params"], d["orient_lists"], d["bases"])
+        self.rng = np.random.default_rng(d["params"].seed * 1000 + wid)
+        self.wid = wid
         self.best: Layout | None = None
         self.runs = 0
-        self.error: str | None = None
-        self.started = time.time()
-        self.finished: float | None = None
-        self.total_qty = sum(p.qty for p in parts)
-        self._runs_by_worker: dict[int, int] = {}
-        self._lock = threading.Lock()
-        self._ctx = mp.get_context("spawn")
-        self._stop = self._ctx.Event()
-        self._queue = self._ctx.Queue()
-        self._procs = []
-        self._thread: threading.Thread | None = None
 
-    def start(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+    def run_for(self, seconds: float) -> dict:
+        """少なくとも 1 回、seconds 秒たつまで探す。戻り値: {"runs": これまでの回数, "best": 良くなったときだけ結果}。"""
+        t_end = time.time() + seconds
+        improved = False
+        while True:
+            run = self.runs if self.wid == 0 else self.runs + 1
+            layout = self.nester.step(self.rng, run, self.best, g_offset=self.wid * 3)
+            self.runs += 1
+            if self.best is None or layout.key() > self.best.key():
+                self.best = layout
+                improved = True
+            if time.time() >= t_end:
+                break
+        return {"runs": self.runs, "best": self.best.to_dict() if improved else None}
 
-    def _run(self):
-        try:
-            n = self.params.workers or max(1, min(8, (mp.cpu_count() or 2) - 1))
-            # 子プロセスは起動（ライブラリの読み込み）に数秒かかるので、先に立ち上げておく。
-            # 大きなデータを起動時の引数で渡すと、子が読み終わるまで親が待たされて順番に起動することになるので、
-            # 起動してからキューで渡す
-            inbox = self._ctx.Queue()
-            for wid in range(n):
-                pr = self._ctx.Process(target=_worker, daemon=True, args=(wid, inbox, self._queue, self._stop))
-                pr.start()
-                self._procs.append(pr)
-            orient_lists = [orientations(p, self.params.angle_step) for p in self.parts]
-            # 端材に対する計算は全プロセス共通なので、ここで 1 回だけ済ませて配る
-            bases = RasterNester(self.container, self.parts, self.params, orient_lists).all_bases()
-            deadline = time.time() + self.params.time_limit
-            for _ in range(n):
-                inbox.put((self.container, self.parts, self.params, orient_lists, bases, deadline))
-            self._collect(n)
-        except Exception as ex:
-            import traceback
-            with self._lock:
-                self.error = f"{ex}\n{traceback.format_exc()}"
-                self.finished = time.time()
 
-    def _collect(self, n: int):
-        done = 0
-        while done < n:
-            try:
-                kind, wid, run, payload = self._queue.get(timeout=0.5)
-            except Exception:
-                if not any(p.is_alive() for p in self._procs):
-                    break
-                continue
-            with self._lock:
-                if kind == "error":
-                    self.error = payload
-                    done += 1
-                    continue
-                self._runs_by_worker[wid] = run
-                self.runs = sum(self._runs_by_worker.values())
-                if kind == "best" and (self.best is None or payload.key() > self.best.key()):
-                    self.best = payload
-                if kind == "done":
-                    done += 1
-        for p in self._procs:
-            p.join(timeout=2.0)
-            if p.is_alive():
-                p.terminate()
-        with self._lock:
-            self.finished = time.time()
-
-    def stop(self):
-        self._stop.set()
-
-    @property
-    def running(self) -> bool:
-        return self.finished is None
-
-    def wait(self, timeout: float | None = None):
-        if self._thread is not None:
-            self._thread.join(timeout)
-
-    def snapshot(self) -> tuple[Layout | None, int, bool]:
-        with self._lock:
-            return self.best, self.runs, self.finished is None
+def placements_from_dicts(items) -> list[Placed]:
+    return [Placed(part=int(d["part"]), flip=bool(d["flip"]), angle=float(d["angle"]), tx=float(d["tx"]), ty=float(d["ty"]))
+            for d in items]
 
 
 def nest_once(container, parts: list[NestPart], params: NestParams) -> Layout:

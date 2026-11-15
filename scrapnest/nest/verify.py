@@ -51,3 +51,28 @@ def drop_invalid(container, parts_by_index: dict, placements: list[Placed], spac
             return keep, dropped
         worst = max(max(p["a"], p["b"] if p["b"] is not None else -1) for p in problems)
         dropped.append(keep.pop(worst))
+
+
+def measure(container, parts_by_index: dict, placements: list[Placed]) -> dict:
+    """実際の最小間隔（部材どうし）と最小余白（端材の縁まで）[mm]。部材が 1 個なら間隔は None。"""
+    polys = placed_polygons(parts_by_index, placements)
+    if not polys:
+        return {"min_spacing": None, "min_margin": None}
+    boundary = container.boundary
+    min_margin = min(float(boundary.distance(g)) for g in polys)
+    min_spacing = None
+    if len(polys) > 1:
+        tree = STRtree(polys)
+        for i, g in enumerate(polys):
+            # 近いものから順に見る。最小値が見つかっていれば、それより遠いものは調べない
+            reach = 50.0 if min_spacing is None else min_spacing
+            for j in tree.query(g.buffer(reach)):
+                j = int(j)
+                if j <= i:
+                    continue
+                d = float(g.distance(polys[j]))
+                if min_spacing is None or d < min_spacing:
+                    min_spacing = d
+        if min_spacing is None:         # 50 mm 以内に相手がいない
+            min_spacing = min(float(polys[i].distance(polys[j])) for i in range(len(polys)) for j in range(i + 1, len(polys)))
+    return {"min_spacing": min_spacing, "min_margin": min_margin}

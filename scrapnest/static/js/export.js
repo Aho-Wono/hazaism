@@ -1,6 +1,6 @@
 // ステップ 5: 原点と向きを決めて DXF を出力
 
-import { $, $$, api, esc, fmt, svg, toast, withBusy } from "./api.js";
+import { $, $$, apiRaw, fmt, svg, toast, withBusy } from "./api.js";
 import { S, clearLayers, drawRectImage, layers, msgHtml, nav, screenLabel, setHint, vp } from "./ctx.js";
 import * as G from "./geom.js";
 import { drawPlacements, drawScrap, fitToScrap, outlinePoints } from "./layout.js";
@@ -138,32 +138,74 @@ function setTool(t) {
   render();
 }
 
-function defaultPath() {
-  const dir = (S.settings.out_dir || "").replace(/[\\/]+$/, "");
-  return dir ? `${dir}\\${S.settings.out_name || "nest.dxf"}` : (S.settings.out_name || "nest.dxf");
+// ---- 保存 ----
+// Chrome/Edge は「名前を付けて保存」の画面で場所を選べる。前回の保存先を覚えておき、次はそこから開く
+const DB = "scrapnest-ui";
+
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(DB, 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("kv");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("kv", mode);
+      const req = fn(tx.objectStore("kv"));
+      tx.oncomplete = () => { open.result.close(); resolve(req && req.result); };
+      tx.onerror = () => { open.result.close(); reject(tx.error); };
+    };
+  });
+}
+const getLastHandle = () => idb("readonly", (st) => st.get("lastSave")).catch(() => null);
+const setLastHandle = (h) => idb("readwrite", (st) => st.put(h, "lastSave")).catch(() => {});
+
+async function saveFile(data, name) {
+  const blob = new Blob([data], { type: "application/dxf" });
+  if (window.showSaveFilePicker) {
+    const opts = { suggestedName: name, types: [{ description: "DXF", accept: { "application/dxf": [".dxf"] } }] };
+    const last = await getLastHandle();
+    if (last) opts.startIn = last;
+    let handle;
+    try {
+      handle = await window.showSaveFilePicker(opts);
+    } catch (e) {
+      if (e.name === "AbortError") return null;               // 保存をやめた
+      handle = await window.showSaveFilePicker({ ...opts, startIn: undefined });   // 前回の場所が無くなっていた等
+    }
+    const w = await handle.createWritable();
+    await w.write(blob);
+    await w.close();
+    setLastHandle(handle);
+    return { how: "picker", name: handle.name };
+  }
+  // ほかのブラウザ: いつものダウンロード（保存先はブラウザの設定による）
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return { how: "download", name };
 }
 
-async function doExport(overwrite = false) {
-  const path = $("#in-path").value.trim();
-  if (!path) { toast("出力先を入れてください", "bad"); return; }
+async function doExport() {
   const box = $("#export-result");
+  let name = $("#in-filename").value.trim() || "nest.dxf";
+  if (!/\.dxf$/i.test(name)) name += ".dxf";
   try {
-    const r = await withBusy("DXF を書き出しています…", () => api("POST", "/api/export", {
-      path, overwrite, origin: X.origin, angle: X.angle, include_scrap: $("#in-include-scrap").checked,
+    const r = await withBusy("DXF を作っています…", () => apiRaw("POST", "/api/export", {
+      name, origin: X.origin, angle: X.angle, include_scrap: $("#in-include-scrap").checked,
       scrap_color: +$("#in-scrap-color").value,
     }));
-    if (r.exists) {
-      if (confirm(`${r.path}\nはすでにあります。上書きしますか？`)) await doExport(true);
-      return;
-    }
-    $("#in-path").value = r.path;
-    box.replaceChildren(msgHtml("ok", `出力しました（部材 ${r.placed} 個、図形 ${r.entities} 個）`));
-    if (r.warning) box.appendChild(msgHtml("warn", r.warning));
-    const d = document.createElement("div");
-    d.className = "row";
-    d.innerHTML = `<div class="url">${esc(r.path)}</div><button id="btn-open-folder">フォルダーを開く</button>`;
-    box.appendChild(d);
-    $("#btn-open-folder").onclick = () => api("POST", "/api/open-folder", { path: r.path }).catch((e) => toast(e.message, "bad"));
+    const info = r.json;
+    $("#in-filename").value = info.name;
+    S.settings.out_name = info.name;
+    const saved = await saveFile(r.data, info.name);
+    if (!saved) return;
+    const where = saved.how === "picker" ? `「${saved.name}」に保存しました` : `「${saved.name}」をダウンロードしました`;
+    box.replaceChildren(msgHtml("ok", `${where}（部材 ${info.placed} 個、図形 ${info.entities} 個）`));
+    if (info.warning) box.appendChild(msgHtml("warn", info.warning));
   } catch (e) {
     box.replaceChildren(msgHtml("bad", e.message));
   }
@@ -178,17 +220,7 @@ export function initExport() {
   $("#btn-rot-180").onclick = () => setAngle(X.angle + 180);
   $("#in-export-angle").onchange = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setAngle(v); };
   $$("[data-corner]").forEach((b) => (b.onclick = () => setCorner(b.dataset.corner)));
-  $("#btn-browse").onclick = async () => {
-    try {
-      const cur = $("#in-path").value.trim();
-      const m = cur.match(/^(.*)[\\/]([^\\/]*)$/);
-      const r = await api("POST", "/api/browse", m ? { dir: m[1], name: m[2] } : {});
-      if (r.path) $("#in-path").value = r.path;
-    } catch (e) {
-      toast(e.message, "bad");
-    }
-  };
-  $("#btn-export").onclick = () => doExport(false);
+  $("#btn-export").onclick = () => doExport();
   $("#btn-export-back").onclick = () => nav.goto("nest");
 }
 
@@ -210,7 +242,7 @@ export function enterExport() {
   if (!X.origin || X.corner) X.origin = cornerOrigin(X.corner || "tl");
   $("#in-include-scrap").checked = !!S.settings.include_scrap;
   $("#in-scrap-color").value = String(S.settings.scrap_color || 5);
-  if (!$("#in-path").value) $("#in-path").value = defaultPath();
+  if (!$("#in-filename").value) $("#in-filename").value = S.settings.out_name || "nest.dxf";
   $("#export-result").replaceChildren();
   fitToScrap(vp);
   setTool("origin");

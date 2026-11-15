@@ -244,7 +244,8 @@ def extract_outlines(seg: Segmentation, rect: Rectified, *, min_area_mm2: float 
         return []
     hier = hier[0]
     # 写真の外・格子の外に近い画素
-    edge = cv2.dilate((rect.valid == 0).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=int(round(1.5 * ppm)))
+    # 3×3 の四角で n 回太らせるのと同じ（チェビシェフ距離 n 以内）。回数に比例して遅くならないよう距離変換で
+    edge = (cv2.distanceTransform((rect.valid != 0).astype(np.uint8), cv2.DIST_C, 3) <= round(1.5 * ppm)).astype(np.uint8)
     m = int(round(2.0 * ppm))
     edge[:m, :] = 1; edge[-m:, :] = 1; edge[:, :m] = 1; edge[:, -m:] = 1
 
