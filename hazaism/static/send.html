@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hazaism 送信</title>
+<meta name="description" content="スマホで撮った端材の写真を、PC の Hazaism へ直接送ります。">
+<meta name="theme-color" content="#1d2330">
+<link rel="manifest" href="send.webmanifest">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Hazaism">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="stylesheet" href="css/send.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">Hazaism <span>端材教</span></div>
+  <div class="conn idle" id="conn"><span class="dot"></span><span id="conn-text">準備しています…</span></div>
+</header>
+
+<main>
+  <div class="conn-detail" id="conn-detail" hidden></div>
+  <!-- PC とまだ組んでいない -->
+  <section id="unpaired" hidden>
+    <h1>PC とつなぐ</h1>
+    <ol class="steps">
+      <li>PC で Hazaism を開き、上の<b>「スマホ」</b>を押す</li>
+      <li>出てきた QR を、このスマホのカメラで読む</li>
+    </ol>
+    <p class="note">QR から開くと、このページが PC とつながります。</p>
+  </section>
+
+  <section id="paired" hidden>
+    <button class="shoot" id="btn-shoot">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="13" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+      撮って送る
+    </button>
+    <button class="pick" id="btn-pick">アルバムから選んで送る</button>
+    <input type="file" id="in-shoot" accept="image/*" capture="environment" hidden>
+    <input type="file" id="in-pick" accept="image/*" hidden>
+
+    <div class="job" id="job" hidden>
+      <img id="thumb" alt="送る写真">
+      <div class="job-body">
+        <div class="job-title" id="job-title"></div>
+        <div class="progress" id="job-progress"><div class="bar" id="job-bar"></div></div>
+        <div class="job-detail" id="job-detail"></div>
+        <button class="retry" id="btn-retry" hidden>もう一度送る</button>
+      </div>
+    </div>
+    <div id="result"></div>
+
+    <details class="tips">
+      <summary>上手に撮るこつ</summary>
+      <ul>
+        <li>1 マス 10 mm の格子マットの上に板を置き、なるべく<b>真上から</b>撮る</li>
+        <li>板の<b>まわりの格子も</b>入るように、少し引いて撮る（板が写真の端で切れないように）</li>
+        <li>工具や手が板に重ならないようにする</li>
+        <li>影や照明の映り込みが強いときは、向きを変えて撮る</li>
+      </ul>
+    </details>
+  </section>
+
+  <section class="install" id="install" hidden>
+    <div><b>ホーム画面に追加すると</b>、次からアイコン 1 つでこのページを開けます。</div>
+    <div class="install-how" id="install-how"></div>
+    <button class="link" id="btn-install-hide">閉じる</button>
+  </section>
+</main>
+
+<footer class="foot">写真はこのスマホから PC へ直接、暗号化して送られます。</footer>
+<script type="module" src="js/send.js"></script>
+</body>
+</html>

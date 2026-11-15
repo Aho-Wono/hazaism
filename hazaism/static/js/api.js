@@ -61,6 +61,9 @@ export function setBusyText(text) {
   document.getElementById("busy-text").textContent = text;
 }
 
+// 「処理中…」を出している最中か（スマホから写真が届いたとき、勝手に読み込んでよいかの判断に使う）
+export const isBusy = () => busyCount > 0;
+
 export async function withBusy(text, fn) {
   busyCount++;
   setBusyText(text);

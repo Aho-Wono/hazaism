@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent
 class Handler(http.server.SimpleHTTPRequestHandler):
     extensions_map = {**http.server.SimpleHTTPRequestHandler.extensions_map,
                       ".js": "text/javascript", ".mjs": "text/javascript", ".wasm": "application/wasm",
-                      ".json": "application/json", ".whl": "application/zip", ".zip": "application/zip"}
+                      ".json": "application/json", ".whl": "application/zip", ".zip": "application/zip",
+                      ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml"}
 
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")      # 開発中は常に最新のファイルを使う

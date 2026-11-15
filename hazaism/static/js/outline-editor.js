@@ -86,6 +86,9 @@ async function save() {
   nav.refresh();
 }
 
+// 検出した輪郭に手を入れたか（開き直したときは、候補と同じ形かで判断している）
+export const outlineEdited = () => E.dirty;
+
 export function outlineOk() {
   return !!S.outline && E.problems.length === 0;
 }

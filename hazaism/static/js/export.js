@@ -203,6 +203,7 @@ async function doExport() {
     S.settings.out_name = info.name;
     const saved = await saveFile(r.data, info.name);
     if (!saved) return;
+    S.exportedResult = S.result;
     const where = saved.how === "picker" ? `「${saved.name}」に保存しました` : `「${saved.name}」をダウンロードしました`;
     box.replaceChildren(msgHtml("ok", `${where}（部材 ${info.placed} 個、図形 ${info.entities} 個）`));
     if (info.warning) box.appendChild(msgHtml("warn", info.warning));

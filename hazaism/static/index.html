@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hazaism — 端材教</title>
 <meta name="description" content="端材の写真から輪郭を起こし、部材の DXF を敷き詰めて、レーザーカッター用の DXF を作ります。">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
@@ -17,6 +18,7 @@
     <button data-step="nest"><span class="num">4</span>敷き詰め</button>
     <button data-step="export"><span class="num">5</span>出力</button>
   </nav>
+  <button class="ghost phone-btn off" id="btn-phone"><span class="dot"></span>スマホ</button>
   <span class="version" id="version"></span>
   <button class="ghost" id="btn-reset" title="写真や輪郭を消して最初から始めます">最初から</button>
 </header>
@@ -54,9 +56,10 @@
       <p class="lead">1 マス 10 mm の格子マットの上に板を置き、なるべく真上から、板とまわりの格子が入るように撮ってください。</p>
       <div class="row">
         <button class="primary" id="btn-pick-photo">写真を選ぶ</button>
+        <button id="btn-photo-phone" title="スマホで撮った写真を、この画面へ直接送ります">スマホから送る</button>
       </div>
       <p class="note">写真はこの画面にドラッグ＆ドロップ、または貼り付け（Ctrl+V）でも読み込めます。
-        写真や図面はこの PC の中だけで処理され、外へ送られることはありません。</p>
+        写真や図面はこの PC の中だけで処理されます（スマホから送るときも、写真はスマホからこの PC へ直接届きます）。</p>
       <input type="file" id="file-photo" accept="image/*,.heic,.heif" hidden>
       <div id="photo-info" class="info" hidden></div>
       <div id="photo-warnings"></div>
@@ -237,6 +240,56 @@
     <button id="btn-reset-cancel">やめる</button>
     <button id="btn-reset-all">部材も消す</button>
     <button class="primary" id="btn-reset-keep">部材は残す</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-phone">
+  <h3>スマホで撮って送る</h3>
+  <div id="phone-off">
+    <p class="lead">スマホで撮った写真を、この画面へ直接送れるようにします。
+      スマホのカメラで QR を読むと送信のページが開き、「撮って送る」で撮った写真がここに届いて、解析まで進みます。</p>
+    <p class="note">写真はスマホからこの PC へ直接、暗号化して送られます。互いを見つけるためだけに、
+      PeerJS の公開サーバー（0.peerjs.com）を使います（渡るのは接続用の番号と IP アドレスだけです）。</p>
+    <div class="row end">
+      <button id="btn-phone-close-off">やめる</button>
+      <button class="primary" id="btn-phone-enable">使い始める</button>
+    </div>
+  </div>
+  <div id="phone-on" hidden>
+    <p class="lead">スマホのカメラでこの QR を読んでください。開いたページは<b>ホーム画面に追加</b>しておくと、次からアイコン 1 つで開けます。</p>
+    <div id="qr"></div>
+    <div class="pathrow">
+      <div class="url" id="phone-url"></div>
+      <button class="small" id="btn-phone-copy">URL をコピー</button>
+    </div>
+    <div id="phone-status" class="msg"></div>
+    <p class="msg warn" id="phone-volatile" hidden>このブラウザは設定を保存できないため、開き直すたびに QR を読み直す必要があります。</p>
+    <details>
+      <summary>しくみと注意</summary>
+      <ul class="note">
+        <li>このタブを開いておくと、次からは自動で待ち受けます。スマホと PC は同じ Wi-Fi につなぐのが確実です</li>
+        <li>写真はスマホからこの PC へ直接、暗号化して送られます。互いを見つけるためだけに PeerJS の公開サーバー（0.peerjs.com）を使います。
+          直接つながらない回線では PeerJS の中継サーバーを通りますが、中身は暗号化されたままです</li>
+        <li>作業の途中（輪郭を直した後や、敷き詰めた結果を保存する前）に届いたときは、読み込む前にここで確かめます</li>
+        <li>Chrome の「省メモリ」でこのタブが眠ると受け取れません。設定 → パフォーマンス →「常にアクティブにするサイト」に、このサイトを追加してください</li>
+        <li>QR を知っている人は誰でも送れます。人に見られたときは「QR を作り直す」を押してください</li>
+      </ul>
+    </details>
+    <div class="row end">
+      <button id="btn-phone-disable">受け取りをやめる</button>
+      <button id="btn-phone-regen">QR を作り直す</button>
+      <button class="primary" id="btn-phone-close">閉じる</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-incoming">
+  <h3>スマホから写真が届きました</h3>
+  <img id="incoming-thumb" alt="届いた写真">
+  <p><span id="incoming-what"></span>この写真を読み込みますか？</p>
+  <div class="row end">
+    <button id="btn-incoming-skip">読み込まない</button>
+    <button class="primary" id="btn-incoming-load">読み込む</button>
   </div>
 </dialog>
 

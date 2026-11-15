@@ -1,12 +1,13 @@
 // 画面全体の流れ（ステップの切り替え）と、ステップ 1: 写真
 
-import { $, $$, api, fmt, setBusyText, svg, toast, withBusy } from "./api.js";
-import { imageUrl, site, startCore } from "./backend.js";
+import { $, $$, api, fmt, isBusy, setBusyText, svg, toast, withBusy } from "./api.js";
+import { imageUrl, nestRunning, site, startCore } from "./backend.js";
 import { S, clearLayers, initCtx, layers, msgHtml, nav, screenLabel, setHint, vp } from "./ctx.js";
 import { enterExport, initExport, leaveExport, resetExportFrame } from "./export.js";
 import { enterNest, initNest, leaveNest } from "./nest-view.js";
-import { enterOutline, initOutline, leaveOutline, outlineOk, resetOutline, restoreOutline } from "./outline-editor.js";
+import { enterOutline, initOutline, leaveOutline, outlineEdited, outlineOk, resetOutline, restoreOutline } from "./outline-editor.js";
 import { addPartFiles, enterParts, initParts, leaveParts, partsOk } from "./parts.js";
+import { initPhoneReceive, startPhoneReceive } from "./phone-receive.js";
 import { isTyping } from "./viewport.js";
 
 const STEPS = ["photo", "outline", "parts", "nest", "export"];
@@ -139,6 +140,7 @@ async function toJpeg(file) {
   return new File([blob], (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
 }
 
+// 戻り値: { info }（解析した結果）か { error }（読めなかった）
 async function uploadPhoto(file) {
   const send = (f) => {
     const fd = new FormData();
@@ -146,7 +148,7 @@ async function uploadPhoto(file) {
     return api("POST", "/api/photo", fd);
   };
   try {
-    adoptPhoto(await withBusy("写真を解析しています…（20 秒ほどかかります）", async () => {
+    const info = await withBusy("写真を解析しています…（20 秒ほどかかります）", async () => {
       try {
         return await send(file);
       } catch (e) {
@@ -159,10 +161,85 @@ async function uploadPhoto(file) {
         }
         return await send(jpg);
       }
-    }));
+    });
+    adoptPhoto(info);
+    return { info };
   } catch (e) {
     toast(e.message, "bad", 6000);
+    return { error: e.message };
   }
+}
+
+// ---- スマホから届いた写真 ----
+// 作業を消さずに済むときは、すぐ読み込んで解析する。作業の途中なら PC で確かめてから
+const IN = { pending: null };     // PC で確認を待っている写真 { file, reply, url }
+
+function quietToReplace() {
+  if (isBusy() || nestRunning()) return false;
+  if (!S.photo) return true;
+  if (S.result) return S.exportedResult === S.result;      // 敷き詰めた結果は、DXF に保存してあれば消してよい
+  return !outlineEdited();
+}
+
+function whatIsLost() {
+  if (nestRunning()) return "敷き詰めの計算を止めて、";
+  if (isBusy()) return "いまの処理のかわりに、";
+  if (S.result) return "まだ DXF に保存していない敷き詰めの結果を捨てて、";
+  return "手で直した輪郭を捨てて、";
+}
+
+// スマホへ返す、解析の結果のまとめ
+function photoSummary(r) {
+  if (r.error) return { ok: false, unreadable: true, error: r.error };
+  const i = r.info, g = i.grid || {};
+  return {
+    ok: !!i.ok, error: i.ok ? null : i.error, cells: g.cells || null, rms_mm: g.rms_mm ?? null,
+    mm_per_px: g.mm_per_px ?? null, tilt_deg: g.tilt_deg ?? null,
+    candidates: (i.candidates || []).length, warnings: i.warnings || [],
+  };
+}
+
+async function loadFromPhone(file, reply) {
+  reply("analyzing");
+  toast("スマホから写真が届きました", "ok");
+  const r = await uploadPhoto(file);
+  reply("done", photoSummary(r));
+}
+
+function dropPending(reason) {
+  const p = IN.pending;
+  if (!p) return;
+  IN.pending = null;
+  URL.revokeObjectURL(p.url);
+  p.reply("declined", { reason });
+}
+
+function receivePhoto(file, reply) {
+  dropPending("replaced");            // 確認待ちの写真があれば、新しいほうに置き換える
+  if (quietToReplace()) {
+    loadFromPhone(file, reply);
+    return;
+  }
+  IN.pending = { file, reply, url: URL.createObjectURL(file) };
+  $("#incoming-thumb").src = IN.pending.url;
+  $("#incoming-what").textContent = whatIsLost();
+  const dlg = $("#dlg-incoming");
+  if (!dlg.open) dlg.showModal();
+  reply("confirm");
+}
+
+function initIncoming() {
+  const dlg = $("#dlg-incoming");
+  $("#btn-incoming-load").onclick = () => {
+    const p = IN.pending;
+    IN.pending = null;
+    dlg.close();
+    if (!p) return;
+    setTimeout(() => URL.revokeObjectURL(p.url), 1000);
+    loadFromPhone(p.file, p.reply);
+  };
+  $("#btn-incoming-skip").onclick = () => dlg.close();
+  dlg.addEventListener("close", () => dropPending("declined"));      // 「読み込まない」と Esc
 }
 
 function initPhoto() {
@@ -265,6 +342,8 @@ async function main() {
   initNest();
   initExport();
   initDrop();
+  initIncoming();
+  initPhoneReceive(receivePhoto);
   $$("#steps button").forEach((b) => (b.onclick = () => goto(b.dataset.step)));
   $("#btn-fit").onclick = () => vp.refit();
   const dlgReset = $("#dlg-reset");
@@ -318,6 +397,7 @@ async function main() {
     enterPhoto();
   }
   refresh();
+  startPhoneReceive();          // 作業の状態を読み終えてから、スマホからの写真を受け付ける
 }
 
 main();

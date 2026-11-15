@@ -5,6 +5,7 @@
 """
 import json
 import math
+import re
 import subprocess
 import sys
 import time
@@ -75,11 +76,13 @@ def wait_ready(pg, timeout=240_000):
 @pytest.fixture(scope="module")
 def page(server):
     with pw_api.sync_playwright() as pw:
-        browser = pw.chromium.launch()
+        # スマホ役のページと PC のページを同じ PC の中で WebRTC でつなぐので、自分の IP を mDNS の名前で隠さない
+        browser = pw.chromium.launch(args=["--disable-features=WebRtcHideLocalIpsWithMdns"])
         ctx = browser.new_context(viewport={"width": 1500, "height": 950}, accept_downloads=True)
         # 保存の画面（showSaveFilePicker）は自動で操作できないので、ダウンロードで受け取る
         ctx.add_init_script("delete window.showSaveFilePicker")
         pg = ctx.new_page()
+        pg.pw_, pg.browser_ = pw, browser
         pg.errors = []
         pg.on("console", lambda m: pg.errors.append(f"[{m.type}] {m.text}") if m.type == "error" else None)
         pg.on("pageerror", lambda e: pg.errors.append(f"[pageerror] {e}"))
@@ -427,6 +430,136 @@ def test_6_reload_restores(page):
     cached = page.evaluate("async () => (await caches.keys()).sort()")
     assert any(k.startswith("hazaism-pyodide-") for k in cached) and "hazaism-site" in cached, cached
     assert not page.errors, page.errors
+
+
+def test_7a_phone_protocol(page):
+    """スマホ → PC の送り方の取り決め（ネットを使わず、ページの中で送る側と受ける側を直結する）。"""
+    r = page.evaluate("""async () => {
+      const m = await import('./js/phone-link.js');
+      const tick = () => new Promise((ok) => setTimeout(ok, 0));
+      async function roundtrip(bytes) {
+        let feed, file = null;
+        const statuses = [], progress = [];
+        const sender = new m.Sender((d) => setTimeout(() => feed(d), 0));
+        feed = m.createReceiver((o) => { if (o.t === 'status') statuses.push(o); setTimeout(() => sender.onMessage(o), 0); },
+                                (id, f) => { file = f; });
+        await sender.send(bytes.buffer.slice(0), 'IMG_0001.JPG', 'image/jpeg', (f) => progress.push(f));
+        for (let i = 0; i < 100 && !file && !statuses.length; i++) await tick();
+        return { file, statuses, progress };
+      }
+      // 16 KiB の倍数でない、1 MB を超える大きさ（途中の返事も試す）
+      const src = new Uint8Array(16384 * 70 + 123);
+      for (let i = 0; i < src.length; i += 65536) crypto.getRandomValues(src.subarray(i, i + 65536));   // 1 回に 64 KiB まで
+      src.set([0xff, 0xd8, 0xff, 0xe0], 0);
+      const a = await roundtrip(src);
+      const out = new Uint8Array(await a.file.arrayBuffer());
+      let same = out.length === src.length;
+      for (let i = 0; same && i < out.length; i++) if (out[i] !== src[i]) same = false;
+      // 画像でないものは断る
+      const junk = new Uint8Array(5000);
+      junk.fill(7);
+      const b = await roundtrip(junk);
+      return { same, name: a.file.name, type: a.file.type, nprog: a.progress.length, last: a.progress.at(-1),
+               junkFile: !!b.file, junkStatus: b.statuses.map((s) => s.stage) };
+    }""")
+    assert r["same"], "中身が一致しない"
+    assert r["name"] == "IMG_0001.JPG" and r["type"] == "image/jpeg"
+    assert r["nprog"] >= 2 and r["last"] == 1
+    assert not r["junkFile"] and r["junkStatus"] == ["error"]
+
+
+def _phone_page(page):
+    ctx = page.browser_.new_context(**page.pw_.devices["Pixel 7"])
+    ph = ctx.new_page()
+    ph.errors = []
+    ph.on("console", lambda m: ph.errors.append(f"[{m.type}] {m.text}") if m.type == "error" else None)
+    ph.on("pageerror", lambda e: ph.errors.append(f"[pageerror] {e}"))
+    return ph
+
+
+def test_7b_phone_send(page):
+    """スマホ役のページから写真を送ると、PC で解析まで進み、結果がスマホに返る（PeerJS の公開サーバーを使う）。"""
+    page.click("#btn-phone")
+    page.wait_for_selector("#dlg-phone[open]")
+    if page.is_visible("#btn-phone-enable"):
+        page.click("#btn-phone-enable")
+    try:
+        page.wait_for_selector("#phone-status.ok", timeout=40_000)
+    except pw_api.TimeoutError:
+        pytest.skip("PeerJS の公開サーバーにつながりません: " + page.inner_text("#phone-status"))
+    page.wait_for_selector("#qr svg")
+    url = page.inner_text("#phone-url")
+    assert url.startswith("https://aho-wono.github.io/hazaism/send.html#pc=hazaism-"), url    # 手元の配信では公開版を指す
+    pc_id = url.split("#pc=")[1]
+    shot(page, "7_phone_dialog")
+    page.click("#btn-phone-close")
+
+    ph = _phone_page(page)
+    try:
+        ph.goto(BASE + "send.html#pc=" + pc_id)
+        try:
+            ph.wait_for_selector("#conn.open", timeout=40_000)
+        except pw_api.TimeoutError:
+            pytest.skip("スマホ役のページが PC につながりません: " + ph.inner_text("#conn"))
+        page.wait_for_selector("#btn-phone.live")
+        ph.screenshot(path=str(OUT / "7_phone_ready.png"))
+
+        # 1 回目: PC は輪郭を手で直した後なので、読み込む前に PC で確かめる
+        t = time.time()
+        ph.set_input_files("#in-pick", str(PHOTO))
+        page.wait_for_selector("#dlg-incoming[open]", timeout=60_000)
+        ph.wait_for_function("document.querySelector('#job-title').textContent.includes('確認を待って')")
+        assert "輪郭" in page.inner_text("#dlg-incoming") or "敷き詰め" in page.inner_text("#dlg-incoming")
+        shot(page, "7_incoming")
+        page.click("#btn-incoming-load")
+        ph.wait_for_selector("#result .msg.ok", timeout=180_000)
+        TIMES["スマホから送って解析まで（確認を除く）"] = time.time() - t
+        text = ph.inner_text("#result")
+        assert "格子" in text and re.search(r"板 \d+ 枚", text), text
+        st = state(page)
+        assert st["step"] == "photo" and st["photo"]["ok"] and st["result"] is None
+        ph.screenshot(path=str(OUT / "7_phone_done.png"))
+
+        # 2 回目: 写真の画面で手を入れていないので、確かめずにそのまま読み込む
+        ph.set_input_files("#in-shoot", str(PHOTO))
+        ph.wait_for_function("document.querySelector('#job-title').textContent.includes('解析')", timeout=60_000)
+        assert not page.is_visible("#dlg-incoming")
+        ph.wait_for_selector("#result .msg.ok", timeout=180_000)
+        page.wait_for_selector("#busy", state="hidden", timeout=60_000)
+        assert state(page)["photo"]["ok"]
+        assert not ph.errors, ph.errors
+        assert not page.errors, page.errors
+    finally:
+        ph.context.close()
+
+
+def test_7c_send_page_webkit(page):
+    """スマホの送信ページを WebKit（iPhone の Safari と同じしくみ）で開く: 組む前の案内・はみ出しなし・エラーなし。"""
+    try:
+        wk = page.pw_.webkit.launch()
+    except Exception as ex:          # WebKit が入っていない
+        pytest.skip(f"WebKit を起動できません: {str(ex).splitlines()[0]}")
+    try:
+        ph = wk.new_context(**page.pw_.devices["iPhone 13"]).new_page()
+        errors = []
+        ph.on("pageerror", lambda e: errors.append(str(e)))
+        ph.goto(BASE + "send.html")
+        ph.wait_for_selector("#unpaired:not([hidden])")
+        assert "QR" in ph.inner_text("#unpaired")
+        assert ph.evaluate("document.documentElement.scrollWidth") <= ph.viewport_size["width"]
+        ph.goto(BASE + "send.html#pc=hazaism-" + "a" * 24)
+        ph.reload()
+        ph.wait_for_selector("#paired:not([hidden])")
+        assert ph.is_visible("#btn-shoot") and ph.is_visible("#install")
+        if ph.evaluate("typeof RTCPeerConnection === 'undefined'"):
+            # Windows 版の Playwright の WebKit には WebRTC が無い（実機の Safari にはある）。そのときは分かる言葉で知らせる
+            ph.wait_for_selector("#conn-detail:not([hidden])")
+            assert "対応していません" in ph.inner_text("#conn-detail")
+        assert ph.evaluate("document.documentElement.scrollWidth") <= ph.viewport_size["width"]
+        ph.screenshot(path=str(OUT / "7_send_webkit.png"))
+        assert not errors, errors
+    finally:
+        wk.close()
 
 
 def test_8_reset_keeps_or_clears_parts(page):

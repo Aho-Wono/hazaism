@@ -12,6 +12,7 @@ export const S = {
   candIndex: null,  // outline がどの候補から来たか（手で作った場合は null）
   parts: [],
   result: null,     // 敷き詰め結果
+  exportedResult: null,  // DXF に保存した敷き詰め結果（result と同じものなら、保存済み）
   step: "photo",
 };
 

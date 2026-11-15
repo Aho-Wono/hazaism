@@ -257,6 +257,8 @@ function nestStatus() {
   };
 }
 
+export const nestRunning = () => !!(N.run && N.run.active);
+
 // 敷き詰め中に、結果が変わる操作（輪郭・部材・写真）が来たら計算を止める
 export function stopNestIfRunning() {
   if (N.run && N.run.active) nestStop();
