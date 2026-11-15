@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3     # この action は v8 以降、v10 のような短い版名を出していない
       - name: Python の検査
         # 画面の通しの検査（test_e2e）と実物の写真の検査は、写真がリポジトリに無いので自動で飛ばされる
         run: uv run --frozen pytest -q
