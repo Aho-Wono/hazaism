@@ -2,7 +2,7 @@
 
 このアプリはブラウザの中（Pyodide）で 1 人が使うものなので、作業は常に 1 つだけ持つ。
 ページを開き直しても続きから再開できるように、HOME/jobs/last に保存しておく
-（ブラウザでは HOME=/data で、ブラウザ内の保存領域 IndexedDB につながっている）。
+（ブラウザでは HOME=/hazaism で、ブラウザ内の保存領域 IndexedDB につながっている）。
 """
 from __future__ import annotations
 
@@ -26,8 +26,8 @@ from .vision import outline as voutline
 from .vision import segment as vsegment
 
 ROOT = Path(__file__).resolve().parent.parent
-# 保存場所。テストでは SCRAPNEST_HOME で別の場所に向ける
-HOME = Path(os.environ.get("SCRAPNEST_HOME") or ROOT)
+# 保存場所。テストでは HAZAISM_HOME で別の場所に向ける
+HOME = Path(os.environ.get("HAZAISM_HOME") or ROOT)
 JOB_DIR = HOME / "jobs" / "last"
 CONFIG_PATH = HOME / "config.json"
 

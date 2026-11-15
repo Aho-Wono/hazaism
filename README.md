@@ -1,8 +1,9 @@
-# ScrapNest — 端材ネスティング
+# Hazaism — 端材教
 
-**▶ アプリを開く: https://aho-wono.github.io/scrapnest/**
+**▶ アプリを開く: https://aho-wono.github.io/hazaism/**
 
 レーザーカッターで出た板の端材を使い切るためのアプリです。ブラウザで開くだけで使えます（インストール不要）。
+名前は「端材教（hazai＋-ism）」から。端材を一枚も無駄にしない、という教えです。
 格子マットの上で撮った写真から端材の輪郭を寸法つきで起こし、部材の DXF を敷き詰めて、加工機に渡す DXF を作ります。
 
 1. 端材を 1 マス 10 mm の格子マットに置いて写真を撮る
@@ -126,7 +127,7 @@ SmartDIYs Cutter は、DXF のレイヤーではなく**線の色ごと**にレ�
 利用者のブラウザの中で動きます。サーバーはなく、GitHub Pages は静的なファイルを配るだけです。
 
 ```
-uv run python -m scrapnest             # サイトを組み立てて手元で開く（http://127.0.0.1:8765/）
+uv run python -m hazaism             # サイトを組み立てて手元で開く（http://127.0.0.1:8765/）
 uv run pytest                          # 検査
 uv run pytest tests/test_e2e.py        # 画面を通しで操作（初回は uv run playwright install chromium。ネット接続が要る）
 uv run python tools/build_site.py      # 公開するサイトを site/ に組み立てる
@@ -137,10 +138,10 @@ uv run python tests/make_synthetic.py  # 正解つきの合成写真を作る
 写真を置いたときだけ走ります（この写真はリポジトリには入っていません）。
 
 main に push すると、GitHub Actions が検査してからサイトを組み立てて GitHub Pages に置きます（`.github/workflows/pages.yml`）。
-版を上げるときは `pyproject.toml` の `version` を変えます（画面の右上に出ます）。Pyodide の版は `scrapnest/static/js/pyconfig.js` です。
+版を上げるときは `pyproject.toml` の `version` を変えます（画面の右上に出ます）。Pyodide の版は `hazaism/static/js/pyconfig.js` です。
 
 ```
-scrapnest/
+hazaism/
   vision/             写真 → 輪郭（格子の検出、真上から見た画像への補正、板の切り出し、直線＋円弧への当てはめ）
   geom/outline.py     輪郭のモデル、図形を足す・引く
   dxfio/              部材 DXF の読込、結果の書き出し

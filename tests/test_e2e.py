@@ -29,9 +29,9 @@ pytestmark = pytest.mark.skipif(not PHOTO.exists(), reason="tests/data/scrap_sam
 
 
 def _start_server(site: Path):
-    """サイトを組み立てて、手元で配信する（python -m scrapnest と同じ）。"""
+    """サイトを組み立てて、手元で配信する（python -m hazaism と同じ）。"""
     log = open(site.parent / "server.log", "a", encoding="utf-8")
-    proc = subprocess.Popen([sys.executable, "-m", "scrapnest", "--port", str(PORT), "--no-browser", "--site", str(site)],
+    proc = subprocess.Popen([sys.executable, "-m", "hazaism", "--port", str(PORT), "--no-browser", "--site", str(site)],
                             cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
     for _ in range(120):
         try:
@@ -393,7 +393,7 @@ def test_5_export(page, home):
     info = outline_info(page)["info"]
     assert ext.size.x == pytest.approx(info["height"], abs=0.2) and ext.size.y == pytest.approx(info["width"], abs=0.2)
     # 部材の要素数: 置いた部材の要素の合計と一致
-    from scrapnest.dxfio import reader
+    from hazaism.dxfio import reader
     n_ent = {p.name: len(reader.load_part(str(p), p.name).entities) for p in PARTS.glob("*.dxf")}
     id2name = {p["id"]: p["name"] for p in st["parts"]}
     expect = sum(n_ent[id2name[pl["part"]]] for pl in st["result"]["placements"])
@@ -425,7 +425,7 @@ def test_6_reload_restores(page):
     assert page.locator("#layer-image image").count() == 1
     # 2 回目からは、読み込んだファイルをブラウザに残してある（service worker）
     cached = page.evaluate("async () => (await caches.keys()).sort()")
-    assert any(k.startswith("scrapnest-pyodide-") for k in cached) and "scrapnest-site" in cached, cached
+    assert any(k.startswith("hazaism-pyodide-") for k in cached) and "hazaism-site" in cached, cached
     assert not page.errors, page.errors
 
 

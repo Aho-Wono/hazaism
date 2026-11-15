@@ -2,15 +2,16 @@
 //   - Pyodide 本体とライブラリ（CDN、版ごとに URL が変わる）と、配っている wheel: 残っていればそれを使う
 //   - アプリのファイル: まずネットから取り（常に最新版を使う）、つながらなければ残っているものを使う
 const PYODIDE = "__PYODIDE__";              // tools/build_site.py が pyconfig.js の版に置き換える
-const CDN_CACHE = `scrapnest-pyodide-${PYODIDE}`;
-const SITE_CACHE = "scrapnest-site";
+const CDN_CACHE = `hazaism-pyodide-${PYODIDE}`;
+const SITE_CACHE = "hazaism-site";
 
 self.addEventListener("install", () => self.skipWaiting());
 
 self.addEventListener("activate", (e) => {
   e.waitUntil((async () => {
     for (const k of await caches.keys()) {
-      if (k.startsWith("scrapnest-pyodide-") && k !== CDN_CACHE) await caches.delete(k);    // 古い版の Pyodide
+      if (k.startsWith("hazaism-pyodide-") && k !== CDN_CACHE) await caches.delete(k);    // 古い版の Pyodide
+      if (k.startsWith("scrapnest-")) await caches.delete(k);         // 旧名（ScrapNest）のときに残したもの
     }
     await self.clients.claim();
   })());

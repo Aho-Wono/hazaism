@@ -11,12 +11,12 @@ async function init({ build }) {
   const { loadPyodide } = await import(PYODIDE_URL + "pyodide.mjs");
   py = await loadPyodide({ indexURL: PYODIDE_URL });
   await py.loadPackage(NEST_PACKAGES);
-  const zip = await (await fetch(new URL(`py/scrapnest.zip?v=${build}`, SITE))).arrayBuffer();
+  const zip = await (await fetch(new URL(`py/hazaism.zip?v=${build}`, SITE))).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
   py.runPython(`
 import sys, json
 sys.path.insert(0, "/app")
-from scrapnest.nest import engine
+from hazaism.nest import engine
 
 class _Runner:
     def __init__(self, buf, wid):

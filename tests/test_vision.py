@@ -8,10 +8,10 @@ from shapely import affinity
 from shapely.geometry import Polygon
 
 import make_synthetic as syn
-from scrapnest.geom import outline as go
-from scrapnest.vision import grid as vgrid
-from scrapnest.vision import outline as voutline
-from scrapnest.vision import segment as vsegment
+from hazaism.geom import outline as go
+from hazaism.vision import grid as vgrid
+from hazaism.vision import outline as voutline
+from hazaism.vision import segment as vsegment
 
 PHOTO = Path(__file__).resolve().parent / "data" / "scrap_sample_01.png"
 

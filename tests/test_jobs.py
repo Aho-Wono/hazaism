@@ -13,7 +13,7 @@ DATA = Path(__file__).resolve().parent / "data"
 @pytest.fixture()
 def jobs(tmp_path, monkeypatch):
     """保存先を一時フォルダーに向けた jobs モジュール。"""
-    from scrapnest import jobs as j
+    from hazaism import jobs as j
     monkeypatch.setattr(j, "JOB_DIR", tmp_path / "jobs" / "last")
     monkeypatch.setattr(j, "CONFIG_PATH", tmp_path / "config.json")
     return j
@@ -87,7 +87,7 @@ class Client:
 
 @pytest.fixture()
 def client(jobs):
-    from scrapnest import webapi
+    from hazaism import webapi
     webapi.init(restore=False)
     return Client(webapi)
 
@@ -186,7 +186,7 @@ def test_nest_prepare_finish_and_export(client):
     import ezdxf
 
     import make_parts
-    from scrapnest.nest import engine
+    from hazaism.nest import engine
     make_parts.ensure()
     added = client.post("/api/parts", files=[("gusset.dxf", (make_parts.OUT / "gusset.dxf").read_bytes())]).body["added"]
     pid = added[0]["id"]

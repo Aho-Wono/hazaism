@@ -6,7 +6,7 @@ import ezdxf
 import pytest
 from shapely import affinity
 
-from scrapnest.dxfio import reader, writer
+from hazaism.dxfio import reader, writer
 
 PARTS = Path(__file__).resolve().parent / "data" / "parts"
 

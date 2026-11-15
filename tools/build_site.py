@@ -1,8 +1,8 @@
 """公開するサイト（静的ファイルだけ）を site/ に組み立てる。
 
   site/
-    index.html, css/, js/, sw.js    ← scrapnest/static をそのまま
-    py/scrapnest.zip                 ← ブラウザ内の Python が読み込むプログラム（scrapnest パッケージ）
+    index.html, css/, js/, sw.js    ← hazaism/static をそのまま
+    py/hazaism.zip                 ← ブラウザ内の Python が読み込むプログラム（hazaism パッケージ）
     py/ezdxf-<版>-py3-none-any.whl  ← Pyodide に同梱されていないので一緒に配る（uv.lock と同じ版・同じハッシュ）
     version.json                     ← 版と、中身から作った build 番号（ブラウザに古いものを使わせないため）
 
@@ -22,7 +22,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PKG = ROOT / "scrapnest"
+PKG = ROOT / "hazaism"
 STATIC = PKG / "static"
 CACHE = ROOT / ".cache" / "wheels"
 
@@ -60,7 +60,7 @@ def fetch_wheel(name: str) -> Path:
 
 
 def package_zip() -> bytes:
-    """scrapnest パッケージの .py だけを zip にする（画面のファイルと __pycache__ は入れない）。日時は固定して、中身が同じなら同じ zip にする。"""
+    """hazaism パッケージの .py だけを zip にする（画面のファイルと __pycache__ は入れない）。日時は固定して、中身が同じなら同じ zip にする。"""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for p in sorted(PKG.rglob("*.py")):
@@ -79,7 +79,7 @@ def build(out: Path) -> dict:
     shutil.copytree(STATIC, out, ignore=shutil.ignore_patterns("__pycache__"))
     (out / "py").mkdir()
     zdata = package_zip()
-    (out / "py" / "scrapnest.zip").write_bytes(zdata)
+    (out / "py" / "hazaism.zip").write_bytes(zdata)
     wheel = fetch_wheel("ezdxf")
     shutil.copy2(wheel, out / "py" / wheel.name)
 

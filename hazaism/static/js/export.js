@@ -140,7 +140,7 @@ function setTool(t) {
 
 // ---- 保存 ----
 // Chrome/Edge は「名前を付けて保存」の画面で場所を選べる。前回の保存先を覚えておき、次はそこから開く
-const DB = "scrapnest-ui";
+const DB = "hazaism-ui";
 
 function idb(mode, fn) {
   return new Promise((resolve, reject) => {

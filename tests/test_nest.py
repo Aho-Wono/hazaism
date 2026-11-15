@@ -8,9 +8,9 @@ import pytest
 from shapely import affinity
 from shapely.geometry import Point, Polygon, box
 
-from scrapnest.dxfio import reader
-from scrapnest.geom import outline as go
-from scrapnest.nest import engine, raster, verify
+from hazaism.dxfio import reader
+from hazaism.geom import outline as go
+from hazaism.nest import engine, raster, verify
 
 DATA = Path(__file__).resolve().parent / "data"
 
@@ -75,7 +75,7 @@ def test_orientations_use_symmetry():
 def test_transform_matches_dxf_writer(tmp_path):
     """敷き詰めで使う変換（反転 → 回転 → 移動）と、DXF に書き出す変換が同じであること。"""
     import make_parts
-    from scrapnest.dxfio import writer
+    from hazaism.dxfio import writer
     make_parts.ensure()
     part = reader.load_part(str(make_parts.OUT / "bracket_L.dxf"), "b")
     pl = engine.Placed(part=0, flip=True, angle=33.0, tx=12.5, ty=-7.25)

@@ -1,11 +1,13 @@
-// 作業スレッド（core）: ブラウザ内の Python で scrapnest.webapi を動かす。画面からの頼みごとを 1 つずつ順に処理する。
-//   作業データは /data に置き、ブラウザ内の保存領域（IndexedDB）とつないで、ページを開き直しても残るようにする
+// 作業スレッド（core）: ブラウザ内の Python で hazaism.webapi を動かす。画面からの頼みごとを 1 つずつ順に処理する。
+//   作業データは /hazaism に置き、ブラウザ内の保存領域（IndexedDB）とつないで、ページを開き直しても残るようにする
+//   （IndexedDB のデータベース名は置き場所の名前になる。同じドメインのほかのアプリとぶつからないよう、アプリ名にしてある）
 import { CORE_PACKAGES, PYODIDE_URL } from "./pyconfig.js";
 
 let py = null;
 let call = null;
 let queue = Promise.resolve();      // 頼みごとを順番に処理するための列
 const SITE = new URL("../", self.location.href);
+const DATA = "/hazaism";
 
 const progress = (text, pct) => postMessage({ type: "progress", text, pct });
 
@@ -24,21 +26,21 @@ async function init({ build, wheel }) {
     await py.loadPackage(group);
     pct += 22;
   }
-  progress("ScrapNest を準備しています…", 88);
+  progress("Hazaism を準備しています…", 88);
   const micropip = py.pyimport("micropip");
   await micropip.install.callKwargs(new URL(`py/${wheel}`, SITE).href, { deps: false });
   micropip.destroy();
-  const zip = await (await fetch(new URL(`py/scrapnest.zip?v=${build}`, SITE))).arrayBuffer();
+  const zip = await (await fetch(new URL(`py/hazaism.zip?v=${build}`, SITE))).arrayBuffer();
   py.unpackArchive(zip, "zip", { extractDir: "/app" });
 
-  py.FS.mkdirTree("/data");
-  py.FS.mount(py.FS.filesystems.IDBFS, {}, "/data");
+  py.FS.mkdirTree(DATA);
+  py.FS.mount(py.FS.filesystems.IDBFS, {}, DATA);
   await syncfs(true);                       // 前回の作業を IndexedDB から戻す
   py.runPython(`
 import os, sys
-os.environ["SCRAPNEST_HOME"] = "/data"
+os.environ["HAZAISM_HOME"] = "${DATA}"
 sys.path.insert(0, "/app")
-import scrapnest.webapi as webapi
+import hazaism.webapi as webapi
 webapi.init()
 
 def _call(method, path, body_json, files_js):

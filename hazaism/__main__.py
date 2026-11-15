@@ -1,4 +1,4 @@
-"""開発用: サイトを組み立てて、この PC の中だけで配信する。  uv run python -m scrapnest
+"""開発用: サイトを組み立てて、この PC の中だけで配信する。  uv run python -m hazaism
 
 利用者は公開されたページ（GitHub Pages）を開くだけなので、これは使わない。
 """
@@ -41,7 +41,7 @@ def _pick_port(preferred: int) -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="ScrapNest（開発用のローカル配信）")
+    ap = argparse.ArgumentParser(description="Hazaism（開発用のローカル配信）")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true", help="ブラウザを自動で開かない")
     ap.add_argument("--site", type=Path, default=ROOT / "site", help="組み立て先")
@@ -52,7 +52,7 @@ def main() -> None:
     info = build_site.build(args.site)
     port = _pick_port(args.port)
     url = f"http://127.0.0.1:{port}/"
-    print(f"ScrapNest v{info['version']} ({info['build']}): {url}  （終了は Ctrl+C）", flush=True)
+    print(f"Hazaism v{info['version']} ({info['build']}): {url}  （終了は Ctrl+C）", flush=True)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), functools.partial(Handler, directory=str(args.site)))
     if not args.no_browser:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
