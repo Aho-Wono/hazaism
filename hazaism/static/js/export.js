@@ -53,7 +53,6 @@ function render() {
   if (!X.active) return;
   layers.over.replaceChildren();
   layers.labels.replaceChildren();
-  $$("[data-corner]").forEach((b) => b.classList.toggle("active", b.dataset.corner === X.corner));
   // 辺を選ぶとき用の当たり判定
   if (X.tool === "edge") {
     [S.outline.outer, ...(S.outline.holes || [])].forEach((loop) => {
@@ -74,9 +73,20 @@ function render() {
     // 文字は矢印の先の少し外側（画面では y が下向きなので dy の符号を反転する）
     screenLabel(tip, cls === "axis-x" ? "X" : "Y", { dx: dx * 14, dy: -dy * 14, anchor: "middle" });
   };
+  // いまの出力の向きで端材を囲む四角（点線）。四隅の丸をクリックすると、その角が原点になる
+  const fb = frameBox();
+  const toW = (u, v) => [u * fb.c - v * fb.s, u * fb.s + v * fb.c];
+  const cs = { tl: toW(fb.u0, fb.v1), tr: toW(fb.u1, fb.v1), br: toW(fb.u1, fb.v0), bl: toW(fb.u0, fb.v0) };
+  svg("path", { d: `M${cs.tl}L${cs.tr}L${cs.br}L${cs.bl}Z`, class: "frame-box" }, layers.over);
+
   arrow(c, s, "axis-x");
   arrow(-s, c, "axis-y");
   svg("circle", { cx: o[0], cy: o[1], r: vp.px(5), class: "axis-o" }, layers.over);
+  for (const [k, p] of Object.entries(cs)) {
+    const el = svg("circle", { cx: p[0], cy: p[1], r: vp.px(9), class: "corner-pick" + (X.corner === k ? " active" : "") }, layers.over);
+    el.dataset.corner = k;
+    svg("title", {}, el).textContent = X.corner === k ? "いまの原点" : "この角を原点にする";
+  }
 
   // 出力座標での範囲
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -115,6 +125,11 @@ function snap(w) {
 
 function onClick(e) {
   if (!X.active || e.button !== 0 || vp.panning || vp.spaceDown) return;
+  const corner = e.target.dataset && e.target.dataset.corner;
+  if (corner) {                       // 図の四隅の丸
+    setCorner(corner);
+    return;
+  }
   if (X.tool === "edge") {
     const a = e.target.dataset && e.target.dataset.ang;
     if (a === undefined) return;
@@ -134,7 +149,9 @@ function onClick(e) {
 function setTool(t) {
   X.tool = t;
   $$("[data-etool]").forEach((b) => b.classList.toggle("active", b.dataset.etool === t));
-  setHint(t === "origin" ? "原点にしたい場所をクリック（頂点・角・辺に吸着します）" : "X 軸と平行にしたい辺をクリック");
+  setHint(t === "origin"
+    ? "四隅の丸をクリックすると、その角が原点になります。ほかの場所をクリックすると、そこが原点になります（頂点・辺に吸着）"
+    : "X 軸と平行にしたい辺をクリック");
   render();
 }
 
@@ -220,7 +237,6 @@ export function initExport() {
   $("#btn-rot-p90").onclick = () => setAngle(X.angle + 90);
   $("#btn-rot-180").onclick = () => setAngle(X.angle + 180);
   $("#in-export-angle").onchange = (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) setAngle(v); };
-  $$("[data-corner]").forEach((b) => (b.onclick = () => setCorner(b.dataset.corner)));
   $("#btn-export").onclick = () => doExport();
   $("#btn-export-back").onclick = () => nav.goto("nest");
 }

@@ -1,32 +1,34 @@
-"""敷き詰め: 貪欲配置を、順番と向きを変えながら時間いっぱい繰り返す。
+"""敷き詰めの準備（Python 側）。探索そのものはブラウザの作業スレッドで JavaScript（static/js/nest/engine.js）が回す。
 
-1 回の貪欲配置:
-  - 部材を 1 個ずつ、候補の向きそれぞれについて「置ける位置」の画像を作る（raster.py）
-  - 「寄せる方向」に対して部材の先端がいちばん手前に収まる位置と向きを選ぶ
-    （奥から順に詰まっていくので、残りの端材がひとかたまりで残りやすい）
-配置どうしの比較は、①置けた面積 ②置けた個数 ③残った空き領域のうち最大のひとかたまりの面積。
+ここでするのは、図形（shapely）が要る次のことだけ:
+  - 部材ごとに試す向き（角度, 反転）の一覧を作る。回転対称・鏡映対称で同じ形になるものは省く
+  - 端材と、各向きの部材（間隔の半分ぶん太らせたもの）を同じ格子の画像にする（raster.rasterize）
+  - それをまとめて、JavaScript が読めるデータ（prepare() → bytes）にする
+探索の結果は jobs.nest_finish → verify.py で、元の図形のまま確かめる。
 
-部材は「間隔の半分」太らせた形で重なりを調べるので、結果は間隔と余白を満たす
-（最後に verify.py で元の図形でも確かめる）。
+探索のしかた（engine.js）:
+  1 回の貪欲配置で、部材を 1 個ずつ、候補の向きそれぞれについて「置ける位置」を求め、「寄せる方向」に対して
+  部材の先端がいちばん手前に収まる位置と向きを選ぶ。配置どうしの比較は ①置けた面積 ②置けた個数 ③残った空き領域のうち
+  最大のひとかたまりの面積。これを、置く順番と向きを乱数で変えたり、良い配置の一部をこわして置き直したりしながら繰り返す。
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-import pickle
-import sys
-import time
+import struct
 from collections import OrderedDict
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 
-import cv2
 import numpy as np
 from shapely import affinity
 from shapely.geometry import MultiPolygon, Polygon, box
+from shapely.geometry.polygon import orient as orient_ring
 
 from . import raster
 
-N_GRAVITY = 8
-IN_BROWSER = sys.platform == "emscripten"     # Pyodide（ブラウザ内の Python）。スレッドが使えず、メモリも控えめにする
+PAYLOAD_MAGIC = b"HZN1"
+PAYLOAD_VERSION = 1
 
 
 @dataclass
@@ -46,7 +48,6 @@ class NestParams:
     use_holes: bool = True           # 他の部材の穴の中にも置く
     time_limit: float = 30.0         # 計算時間 [秒]
     resolution: float | None = None  # 格子の細かさ [mm]（None なら自動）
-    workers: int | None = None
     seed: int = 0
 
 
@@ -59,22 +60,6 @@ class Placed:
     ty: float
 
 
-@dataclass
-class Layout:
-    placements: list[Placed] = field(default_factory=list)
-    placed_area: float = 0.0
-    leftover: float = 0.0            # 残った空き領域のうち最大のひとかたまり [mm2]
-    raw: list = field(default_factory=list, repr=False)   # 格子上の配置 [(向きのキー, x, y)]。置き直しに使う
-
-    def key(self):
-        return (round(self.placed_area, 2), len(self.placements), round(self.leftover, 0))
-
-    def to_dict(self) -> dict:
-        """作業スレッドから画面へ送る形（JSON にできるものだけ）。"""
-        return {"placements": [asdict(p) for p in self.placements], "placed_area": self.placed_area,
-                "leftover": self.leftover, "key": list(self.key())}
-
-
 def transform_polygon(poly, flip: bool, angle: float, tx: float = 0.0, ty: float = 0.0):
     """部材のローカル座標 → 配置後。順に: 反転（x → −x）→ 回転 → 移動。"""
     g = affinity.scale(poly, xfact=-1.0, yfact=1.0, origin=(0, 0)) if flip else poly
@@ -85,9 +70,18 @@ def transform_polygon(poly, flip: bool, angle: float, tx: float = 0.0, ty: float
     return g
 
 
+def placements_from_dicts(items) -> list[Placed]:
+    return [Placed(part=int(d["part"]), flip=bool(d["flip"]), angle=float(d["angle"]), tx=float(d["tx"]), ty=float(d["ty"]))
+            for d in items]
+
+
 def _filled(poly):
     polys = poly.geoms if isinstance(poly, MultiPolygon) else [poly]
     return MultiPolygon([Polygon(p.exterior) for p in polys])
+
+
+def _poly_key(poly) -> str:
+    return hashlib.sha1(poly.wkb).hexdigest()
 
 
 # ---- 向きの候補 --------------------------------------------------------------------
@@ -99,355 +93,242 @@ def _same_shape(a, b) -> bool:
     return a.symmetric_difference(b2).area < 0.004 * a.area
 
 
+def _second_moments(poly) -> tuple[float, float, float]:
+    """重心まわりの 2 次モーメント（面積で割ったもの）: (xx, yy, xy)。"""
+    polys = poly.geoms if isinstance(poly, MultiPolygon) else [poly]
+    A = Sx = Sy = Sxx = Syy = Sxy = 0.0
+    for p in polys:
+        p = orient_ring(p, 1.0)               # 外周は反時計回り、穴は時計回り（穴の分は自然に差し引かれる）
+        for ring in [p.exterior, *p.interiors]:
+            c = np.asarray(ring.coords)
+            x0, y0, x1, y1 = c[:-1, 0], c[:-1, 1], c[1:, 0], c[1:, 1]
+            cr = x0 * y1 - x1 * y0
+            A += cr.sum() / 2
+            Sx += ((x0 + x1) * cr).sum() / 6
+            Sy += ((y0 + y1) * cr).sum() / 6
+            Sxx += ((x0 * x0 + x0 * x1 + x1 * x1) * cr).sum() / 12
+            Syy += ((y0 * y0 + y0 * y1 + y1 * y1) * cr).sum() / 12
+            Sxy += ((x0 * y1 + 2 * x0 * y0 + 2 * x1 * y1 + x1 * y0) * cr).sum() / 24
+    cx, cy = Sx / A, Sy / A
+    return Sxx / A - cx * cx, Syy / A - cy * cy, Sxy / A - cx * cy
+
+
+_ORIENT_CACHE: OrderedDict = OrderedDict()
+
+
 def orientations(part: NestPart, angle_step: float) -> list[tuple[float, bool]]:
-    """試す向き（角度, 反転）の一覧。回転対称・鏡映対称で同じ形になるものは省く。"""
+    """試す向き（角度, 反転）の一覧。回転対称・鏡映対称で同じ形になるものは省く（同じ部材・同じ刻みなら覚えておく）。"""
+    key = (_poly_key(part.polygon), float(angle_step), part.allow_flip, part.rotation)
+    hit = _ORIENT_CACHE.get(key)
+    if hit is not None:
+        _ORIENT_CACHE.move_to_end(key)
+        return list(hit)
+    out = _orientations(part, angle_step)
+    _ORIENT_CACHE[key] = out
+    while len(_ORIENT_CACHE) > 256:
+        _ORIENT_CACHE.popitem(last=False)
+    return list(out)
+
+
+def _orientations(part: NestPart, angle_step: float) -> list[tuple[float, bool]]:
     poly = part.polygon.simplify(0.05)
     if part.rotation == "fixed":
-        angles = [0.0]
+        angles, grid = [0.0], 360.0
     elif part.rotation == "90":
-        angles = [0.0, 90.0, 180.0, 270.0]
+        angles, grid = [0.0, 90.0, 180.0, 270.0], 90.0
     else:
-        step = min(max(float(angle_step), 1.0), 360.0)
-        angles = [float(a) for a in np.arange(0.0, 360.0 - 1e-9, step)]
-    # 回転対称: いちばん小さい周期を探して、その範囲だけにする
+        grid = min(max(float(angle_step), 1.0), 360.0)
+        angles = [float(a) for a in np.arange(0.0, 360.0 - 1e-9, grid)]
+    # 回転対称の周期（いちばん小さいもの）。周期は 360 の約数なので、それだけ試す
     period = 360.0
-    for cand in sorted({a for a in angles if a > 0} | {360.0 / k for k in (2, 3, 4, 5, 6, 8)}):
-        if cand < 360.0 and _same_shape(poly, affinity.rotate(poly, cand, origin="centroid")):
-            period = cand
-            break
+    if len(angles) > 1:
+        cands = {360.0 / k for k in range(2, 13)}
+        cands |= {360.0 / k for k in range(2, 361) if abs((360.0 / k) / grid - round((360.0 / k) / grid)) < 1e-9}
+        for cand in sorted(cands):
+            if _same_shape(poly, affinity.rotate(poly, cand, origin="centroid")):
+                period = cand
+                break
     angles = [a for a in angles if a < period - 1e-9] or [0.0]
     out = [(a, False) for a in angles]
-    if part.allow_flip:
-        mirrored = affinity.scale(poly, xfact=-1.0, yfact=1.0, origin=(0, 0))
-        tests = angles if len(angles) <= 72 else angles[:: max(1, len(angles) // 72)]
-        has_axis = any(_same_shape(mirrored, affinity.rotate(poly, a, origin="centroid")) for a in
-                       sorted(set(tests) | {a / 2 for a in tests}))
-        if not has_axis:
-            out += [(a, True) for a in angles]
+    if part.allow_flip and not _has_mirror_on_grid(poly, grid, period):
+        out += [(a, True) for a in angles]
     return out
 
 
-# ---- 1 プロセスぶんの計算 ----------------------------------------------------------
+def _has_mirror_on_grid(poly, grid: float, period: float) -> bool:
+    """裏返した形が、試す角度のどれかだけ回した元の形と同じか（同じなら裏返す向きは要らない）。
 
-class _Orient:
-    __slots__ = ("part", "angle", "flip", "mask", "h", "w", "mx0", "my0", "base", "base_shape", "ext")
+    裏返し（x → −x）が角度 θ の回転と同じになるのは、形に鏡映の軸があるとき。軸は慣性主軸のどちらかなので、
+    その θ を試す角度にそろえて確かめる。慣性が等方的な形（正方形・正多角形・円）は、試す角度を全部確かめる。
+    """
+    mirrored = affinity.scale(poly, xfact=-1.0, yfact=1.0, origin=(0, 0))
+    mxx, myy, mxy = _second_moments(poly)
+    aniso = math.hypot(mxx - myy, 2 * mxy) > 1e-3 * (mxx + myy)
+    if aniso:
+        phi = 0.5 * math.degrees(math.atan2(2 * mxy, mxx - myy))       # 主軸の向き
+        thetas = {180.0 - 2 * phi, -2 * phi}                            # 軸が φ か φ + 90° のときの回転角
+    else:
+        thetas = {float(a) for a in np.arange(0.0, period - 1e-9, grid)}
+    for th in thetas:
+        a = (round((th % period) / grid) * grid) % period              # 試す角度にそろえる
+        if _same_shape(mirrored, affinity.rotate(poly, a, origin="centroid")):
+            return True
+    return False
 
-    def __init__(self, part, angle, flip, mask, mx0, my0):
-        self.part, self.angle, self.flip = part, angle, flip
-        self.mask = mask
-        self.h, self.w = mask.shape
-        self.mx0, self.my0 = mx0, my0
-        self.base = None          # 端材だけに対する「置けない位置」（ビット詰め）。False は「どこにも置けない」
-        self.base_shape = None
-        self.ext = {}
+
+# ---- 格子とマスク ------------------------------------------------------------------
+
+@dataclass
+class Grid:
+    x0: float
+    y0: float
+    res: float
+    W: int
+    H: int
+    grow: float                      # 部材を太らせる量 [mm]（間隔の半分 ＋ わずかな上乗せ）
 
 
-class RasterNester:
-    FFT_CACHE_BYTES = 32_000_000 if IN_BROWSER else 96_000_000
-    MAX_ORIENTS = 160            # 1 部材あたり、1 回の貪欲配置で試す向きの上限
+def target_pixels(time_limit: float) -> float:
+    """格子の画素数の目安。計算時間が短いときは格子を粗くして、試せる回数を増やす（10 秒以上は 0.5 までと同じ細かさ）。"""
+    if time_limit <= 1:
+        return 80_000
+    if time_limit <= 3:
+        return 120_000
+    if time_limit <= 5:
+        return 160_000
+    return 250_000
 
-    def __init__(self, container, parts: list[NestPart], params: NestParams, orient_lists=None, bases=None):
-        self.parts = parts
-        self.params = params
-        self._bases = bases or {}       # 親プロセスで計算済みの「端材だけに対する置けない位置」
-        minx, miny, maxx, maxy = container.bounds
-        self.res = params.resolution or raster.choose_resolution(maxx - minx, maxy - miny)
-        r = self.res
-        # ラスタ化は「図形が少しでもかかる画素」を 1 にする（raster.rasterize）。部材も「置けない領域」も
-        # その流儀で作るので、画像どうしが重ならなければ図形どうしも重ならない。念のため少しだけ上乗せする
-        self.pad = 0.25 * r
-        self.grow = params.spacing / 2 + self.pad
-        self.x0, self.y0 = minx - 2 * r, miny - 2 * r
-        self.W = int(math.ceil((maxx - minx) / r)) + 4
-        self.H = int(math.ceil((maxy - miny) / r)) + 4
-        free = container.buffer(-(max(params.margin - params.spacing / 2, 0.0) + self.pad))
-        frame = box(self.x0 - r, self.y0 - r, self.x0 + (self.W + 1) * r, self.y0 + (self.H + 1) * r)
-        self.blocked = raster.rasterize(frame.difference(free), self.x0, self.y0, r, (self.H, self.W))
-        self.free = (1 - self.blocked).astype(np.uint8)
-        self.orient_lists = orient_lists or [orientations(p, params.angle_step) for p in parts]
-        self.area = [float(p.polygon.area) for p in parts]
-        self._orients: dict = {}
-        self._ffts: OrderedDict = OrderedDict()     # (向きのキー, 大きさ) → マスクの FFT（新しい順に残す）
-        self._fft_bytes = 0
-        # 寄せる方向ごとの「奥行き」の画像（小さいほど奥）。わずかに横方向の成分を足して同点をなくす
-        yy, xx = np.mgrid[0:self.H, 0:self.W].astype(np.float32)
-        self.G = []
-        for k in range(N_GRAVITY):
-            a = 2 * math.pi * k / N_GRAVITY
-            gx, gy = math.cos(a), math.sin(a)
-            self.G.append((gx, gy, gx * xx + gy * yy + 1e-3 * (-gy * xx + gx * yy)))
-        ksz = max(3, int(round(8.0 / r)) | 1)
-        self._leftover_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
 
-    # -- 向きごとのマスク --
-    def orient(self, key) -> _Orient | None:
-        o = self._orients.get(key, 0)
-        if o != 0:
-            return o
-        pi, angle, flip = key
-        poly = self.parts[pi].polygon
-        if not self.params.use_holes:
-            poly = _filled(poly)
-        g = transform_polygon(poly, flip, angle).buffer(self.grow, quad_segs=6)
-        minx, miny, maxx, maxy = g.bounds
-        r = self.res
-        mx0, my0 = math.floor(minx / r) * r, math.floor(miny / r) * r
-        w = int(math.ceil((maxx - mx0) / r)) + 1
-        h = int(math.ceil((maxy - my0) / r)) + 1
-        if h > self.H or w > self.W:
-            self._orients[key] = None
-            return None
-        mask = raster.rasterize(g, mx0, my0, r, (h, w))
-        o = _Orient(pi, angle, flip, mask, mx0, my0)
-        self._orients[key] = o
-        return o
+def make_grid(container, params: NestParams) -> tuple[Grid, np.ndarray]:
+    """格子と、端材の「置けない画素」（1 = 端材の外か、縁からの余白の内側）。"""
+    minx, miny, maxx, maxy = container.bounds
+    r = params.resolution or raster.choose_resolution(maxx - minx, maxy - miny, target_pixels(params.time_limit))
+    # ラスタ化は「図形が少しでもかかる画素」を 1 にする（raster.rasterize）。部材も「置けない領域」も
+    # その流儀で作るので、画像どうしが重ならなければ図形どうしも重ならない。念のため少しだけ上乗せする
+    pad = 0.25 * r
+    grid = Grid(x0=minx - 2 * r, y0=miny - 2 * r, res=r,
+                W=int(math.ceil((maxx - minx) / r)) + 4, H=int(math.ceil((maxy - miny) / r)) + 4,
+                grow=params.spacing / 2 + pad)
+    free = container.buffer(-(max(params.margin - params.spacing / 2, 0.0) + pad))
+    frame = box(grid.x0 - r, grid.y0 - r, grid.x0 + (grid.W + 1) * r, grid.y0 + (grid.H + 1) * r)
+    blocked = raster.rasterize(frame.difference(free), grid.x0, grid.y0, r, (grid.H, grid.W))
+    return grid, blocked
 
-    def _base(self, o: _Orient):
-        if o.base is None:
-            pre = self._bases.get((o.part, o.angle, o.flip))
-            if pre is not None:
-                o.base, o.base_shape = pre
-            else:
-                B = raster.blocked_positions(self.blocked, o.mask)
-                if B is None or B.all():
-                    o.base = False
-                else:
-                    o.base_shape = B.shape
-                    o.base = np.packbits(B)
-        if o.base is False:
-            return None
-        n = o.base_shape[0] * o.base_shape[1]
-        return np.unpackbits(o.base, count=n).reshape(o.base_shape).astype(bool)
 
-    def _extent(self, o: _Orient, g: int) -> float:
-        e = o.ext.get(g)
-        if e is None:
-            gx, gy, _ = self.G[g]
-            jj, ii = np.nonzero(o.mask)
-            e = float((gx * ii + gy * jj).max())
-            o.ext[g] = e
-        return e
+_MASK_CACHE: OrderedDict = OrderedDict()
+_MASK_CACHE_LIMIT = 48_000_000        # 覚えておくマスクの合計 [バイト]
+_mask_bytes = 0
 
-    def _fft(self, key, size):
-        k = (key, size)
-        f = self._ffts.get(k)
-        if f is None:
-            f = raster.mask_fft(self._orients[key].mask, size)
-            self._ffts[k] = f
-            self._fft_bytes += f.nbytes
-            while self._fft_bytes > self.FFT_CACHE_BYTES and len(self._ffts) > 2:
-                _, old = self._ffts.popitem(last=False)
-                self._fft_bytes -= old.nbytes
+
+def part_masks(part: NestPart, orients: list[tuple[float, bool]], grid: Grid, use_holes: bool) -> list:
+    """向きごとのマスク [(mask(uint8), mx0, my0) or None]。格子に入りきらない向きは None。
+
+    太らせる（buffer）のは反転ごとに 1 回だけで、回転はその後にする（向きごとに buffer するより速い）。
+    同じ部材・同じ設定なら、作ったマスクを覚えておいて使い回す。
+    """
+    global _mask_bytes
+    pkey = _poly_key(part.polygon)
+    r = grid.res
+    grown = {}
+    out = []
+    for angle, flip in orients:
+        key = (pkey, use_holes, flip, angle, round(grid.grow, 9), round(r, 9))
+        hit = _MASK_CACHE.get(key)
+        if hit is None:
+            if flip not in grown:
+                poly = part.polygon if use_holes else _filled(part.polygon)
+                g0 = affinity.scale(poly, xfact=-1.0, yfact=1.0, origin=(0, 0)) if flip else poly
+                grown[flip] = g0.buffer(grid.grow, quad_segs=6)
+            g = affinity.rotate(grown[flip], angle, origin=(0, 0)) if angle else grown[flip]
+            minx, miny, maxx, maxy = g.bounds
+            mx0, my0 = math.floor(minx / r) * r, math.floor(miny / r) * r
+            w = int(math.ceil((maxx - mx0) / r)) + 1
+            h = int(math.ceil((maxy - my0) / r)) + 1
+            hit = (raster.rasterize(g, mx0, my0, r, (h, w)), mx0, my0)
+            _MASK_CACHE[key] = hit
+            _mask_bytes += hit[0].nbytes
+            while len(_MASK_CACHE) > 2 and _mask_bytes > _MASK_CACHE_LIMIT:
+                _, old = _MASK_CACHE.popitem(last=False)
+                _mask_bytes -= old[0].nbytes
         else:
-            self._ffts.move_to_end(k)
-        return f
-
-    def _apply_nfr(self, B: np.ndarray, o: _Orient, okey, pkey, px: int, py: int) -> None:
-        """置いた部材 pkey（左上 px, py）と重なる位置を、向き o の「置けない位置」B に足す。"""
-        p = self._orients[pkey]
-        size = (raster.fft_size(p.h + o.h - 1), raster.fft_size(p.w + o.w - 1))
-        nfr = raster.no_fit_region(self._fft(pkey, size), self._fft(okey, size), size, (p.h, p.w), (o.h, o.w))
-        ys, xs = py - (o.h - 1), px - (o.w - 1)
-        Hk, Wk = B.shape
-        y0, y1 = max(0, ys), min(Hk, ys + nfr.shape[0])
-        x0, x1 = max(0, xs), min(Wk, xs + nfr.shape[1])
-        if y0 < y1 and x0 < x1:
-            B[y0:y1, x0:x1] |= nfr[y0 - ys:y1 - ys, x0 - xs:x1 - xs]
-
-    def all_bases(self, threads: int = 8) -> dict:
-        """すべての向きについて「端材だけに対する置けない位置」を先に計算する（作業スレッドへ渡す用）。"""
-        keys = [(i, a, f) for i, lst in enumerate(self.orient_lists) for a, f in lst]
-
-        def one(key):
-            o = self.orient(key)
-            if o is None:
-                return key, (False, None)
-            self._base(o)
-            return key, (o.base, o.base_shape)
-
-        if IN_BROWSER or threads <= 1:          # ブラウザではスレッドを作れないので順番に
-            return dict(one(k) for k in keys)
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=threads) as ex:
-            return dict(ex.map(one, keys))
-
-    # -- 1 回の貪欲配置 --
-    def greedy(self, order: list[int], orient_sets: list[list], g: int, fixed=None) -> Layout:
-        """order の順に 1 個ずつ置く。fixed は、先に置いたままにしておく配置 [(向きのキー, x, y), ...]。"""
-        placed = list(fixed or [])     # (向きのキー, x, y)
-        live = {}             # 向きのキー → [置けない位置, 取り込み済みの配置数]
-        failed = set()
-        occ = np.zeros((self.H, self.W), np.uint8)
-        for key, x, y in placed:
-            o = self._orients[key]
-            occ[y:y + o.h, x:x + o.w] |= o.mask
-        Gmap = self.G[g][2]
-        for pi in order:
-            if pi in failed:
-                continue
-            best = None
-            for key in orient_sets[pi]:
-                o = self.orient(key)
-                if o is None:
-                    continue
-                lv = live.get(key)
-                if lv is None:
-                    B = self._base(o)
-                    if B is None:
-                        continue
-                    lv = live[key] = [B, 0]
-                B = lv[0]
-                for pkey, px, py in placed[lv[1]:]:
-                    self._apply_nfr(B, o, key, pkey, px, py)
-                lv[1] = len(placed)
-                val = np.where(B, np.inf, Gmap[:B.shape[0], :B.shape[1]])
-                idx = int(np.argmin(val))
-                v = float(val.flat[idx])
-                if not math.isfinite(v):
-                    continue
-                score = v + self._extent(o, g)
-                if best is None or score < best[0]:
-                    best = (score, key, idx % B.shape[1], idx // B.shape[1])
-            if best is None:
-                failed.add(pi)
-                continue
-            _, key, x, y = best
-            o = self._orients[key]
-            placed.append((key, x, y))
-            occ[y:y + o.h, x:x + o.w] |= o.mask
-
-        out = Layout(raw=placed)
-        r = self.res
-        for key, x, y in placed:
-            o = self._orients[key]
-            out.placements.append(Placed(part=self.parts[o.part].index, flip=o.flip, angle=o.angle,
-                                         tx=self.x0 + x * r - o.mx0, ty=self.y0 + y * r - o.my0))
-            out.placed_area += self.area[o.part]
-        remain = cv2.erode(self.free & (1 - occ), self._leftover_kernel)
-        n, _, stats, _ = cv2.connectedComponentsWithStats(remain, connectivity=4)
-        out.leftover = float(stats[1:, cv2.CC_STAT_AREA].max()) * r * r if n > 1 else 0.0
-        return out
-
-    # -- 順番と向きの決め方 --
-    def plan(self, rng: np.random.Generator, run: int, elite: Layout | None):
-        """run 回目の（置く順番, 部材ごとの向きの候補）。0 回目は決まった手順、以降は乱数で変える。"""
-        inst = [i for i, p in enumerate(self.parts) for _ in range(p.qty)]
-        sigma = 0.0 if run == 0 else float(rng.choice([0.0, 0.25, 0.6, 1.2]))
-        keys = [math.log(self.area[i] + 1e-9) + (rng.normal(0, sigma) if sigma else 0.0) for i in inst]
-        order = [i for _, i in sorted(zip(keys, range(len(inst))), key=lambda t: -t[0])]
-        order = [inst[k] for k in order]
-
-        sets = []
-        for i, lst in enumerate(self.orient_lists):
-            if len(lst) <= self.MAX_ORIENTS:
-                chosen = list(lst)
-            else:
-                # 多すぎるときは、90° 単位の向きと、これまでの最良の配置で使われた向きを残して間引く
-                chosen = [(a, f) for a, f in lst if abs((a / 90.0) - round(a / 90.0)) < 1e-9]
-                if elite is not None:
-                    for pl in elite.placements:
-                        if pl.part == self.parts[i].index and (pl.angle, pl.flip) not in chosen:
-                            chosen.append((pl.angle, pl.flip))
-                rest = [o for o in lst if o not in chosen]
-                k = max(0, self.MAX_ORIENTS - len(chosen))
-                if run == 0:
-                    chosen += rest[:: max(1, len(rest) // max(1, k))][:k]
-                else:
-                    chosen += [rest[j] for j in rng.choice(len(rest), size=min(k, len(rest)), replace=False)]
-            sets.append([(i, a, f) for a, f in chosen])
-        return order, sets
+            _MASK_CACHE.move_to_end(key)
+        mask = hit[0]
+        out.append(hit if mask.shape[0] <= grid.H and mask.shape[1] <= grid.W else None)
+    return out
 
 
-    # -- 探索の 1 手 --
-    def step(self, rng: np.random.Generator, run: int, best: Layout | None, g_offset: int = 0) -> Layout:
-        """配置を 1 つ作る。最初のうちと 4 回に 1 回は一から、それ以外は最良の配置を一部こわして置き直す。
-
-        一から作るだけだと当たりを引くまで時間がかかるので、良い配置の近くを重点的に探す（ruin & recreate）。
-        """
-        order, sets = self.plan(rng, run, best)
-        if best is None or not best.raw or run < 2 or rng.random() < 0.25:
-            return self.greedy(order, sets, (run + g_offset) % N_GRAVITY)
-        raw = best.raw
-        n = len(raw)
-        k = int(rng.integers(1, max(2, n // 2 + 1)))
-        if rng.random() < 0.6:        # 近くにある部材をまとめて外す（空いた場所がひとかたまりになる）
-            ctr = np.array([[x + self._orients[key].w / 2, y + self._orients[key].h / 2] for key, x, y in raw])
-            seed = int(rng.integers(n))
-            drop = set(np.argsort(np.linalg.norm(ctr - ctr[seed], axis=1))[:k].tolist())
-        else:
-            drop = set(rng.choice(n, size=k, replace=False).tolist())
-        kept = [pl for i, pl in enumerate(raw) if i not in drop]
-        have: dict[int, int] = {}
-        for key, _, _ in kept:
-            have[key[0]] = have.get(key[0], 0) + 1
-        rest = []
-        for pi in order:              # 残してある個数ぶんを、置く予定から差し引く
-            if have.get(pi, 0) > 0:
-                have[pi] -= 1
-            else:
-                rest.append(pi)
-        return self.greedy(rest, sets, int(rng.integers(N_GRAVITY)), fixed=kept)
-
-
-# ---- 並列実行 ----------------------------------------------------------------------
+# ---- JavaScript に渡すデータ ---------------------------------------------------------
 #
-# ブラウザでは、画面とは別の作業スレッド（Web Worker）を何本か立てて、それぞれで NestWorker を回す。
-#   1. prepare(): 向きの一覧と「端材だけに対する置けない位置」を 1 回だけ計算して、まとめて渡せる形にする
-#   2. 各作業スレッドで NestWorker(payload, 番号) を作り、run_for() を少しずつ呼ぶ（合間に「止めて」を受け取れる）
-#   3. 画面側が各スレッドの最良の結果を集めて、いちばん良いものを採る
+#   "HZN1" | 見出しの長さ (uint32, little endian) | 見出し（JSON、4 バイト境界まで空白で埋める） | 画像
+# 画像はどれも、行ごとに 32 ビットずつ詰めたもの（画素 i は 語 i >> 5 の ビット i & 31、little endian）。
+# 見出しの off は、画像の並びの先頭（= 8 + 見出しの長さ）からのバイト位置（4 の倍数）、words は 1 行あたりの語数。
+
+def _pack_rows(mask: np.ndarray) -> tuple[bytes, int]:
+    h, w = mask.shape
+    words = (w + 31) // 32
+    padded = np.zeros((h, words * 32), np.uint8)
+    padded[:, :w] = mask
+    return np.packbits(padded, axis=1, bitorder="little").tobytes(), words
+
+
+def _unpack_rows(data: bytes, off: int, h: int, w: int, words: int) -> np.ndarray:
+    raw = np.frombuffer(data, np.uint8, count=h * words * 4, offset=off).reshape(h, words * 4)
+    return np.unpackbits(raw, axis=1, bitorder="little")[:, :w]
+
 
 def prepare(container, parts: list[NestPart], params: NestParams) -> bytes:
-    """作業スレッドに配るデータ。全スレッドで共通の重い計算はここで済ませる。"""
-    orient_lists = [orientations(p, params.angle_step) for p in parts]
-    bases = RasterNester(container, parts, params, orient_lists).all_bases()
-    return pickle.dumps({"container": container, "parts": parts, "params": params,
-                         "orient_lists": orient_lists, "bases": bases}, protocol=pickle.HIGHEST_PROTOCOL)
+    """作業スレッド（JavaScript）に配るデータ。"""
+    grid, blocked = make_grid(container, params)
+    head_parts, head_orients = [], []
+    for pi, part in enumerate(parts):
+        lst = orientations(part, params.angle_step)
+        idxs = []
+        for (angle, flip), m in zip(lst, part_masks(part, lst, grid, params.use_holes)):
+            if m is None:
+                continue
+            idxs.append(len(head_orients))
+            head_orients.append({"part": pi, "angle": angle, "flip": flip, "mask": m[0], "mx0": m[1], "my0": m[2]})
+        head_parts.append({"index": part.index, "area": float(part.polygon.area), "qty": int(part.qty), "orients": idxs})
+    prm = {"spacing": params.spacing, "margin": params.margin, "angle_step": params.angle_step,
+           "time_limit": params.time_limit, "use_holes": params.use_holes, "seed": params.seed}
+    return pack_problem(grid, blocked, head_parts, head_orients, prm)
 
 
-class NestWorker:
-    """1 本の作業スレッドで回す探索。番号ごとに乱数と寄せる方向を変えて、スレッドどうしで違う配置を探す。"""
+def pack_problem(grid: Grid, blocked: np.ndarray, parts: list[dict], orients: list[dict], params: dict) -> bytes:
+    """格子・置けない画素・部材（index, area, qty, orients）・向き（part, angle, flip, mask, mx0, my0）をまとめる。"""
+    blobs: list[bytes] = []
+    pos = 0
 
-    def __init__(self, payload: bytes, wid: int):
-        d = pickle.loads(payload)
-        if not IN_BROWSER:
-            cv2.setNumThreads(1)          # 並列はスレッドの数でするので、各スレッドの中は 1 本にする
-        self.nester = RasterNester(d["container"], d["parts"], d["params"], d["orient_lists"], d["bases"])
-        self.rng = np.random.default_rng(d["params"].seed * 1000 + wid)
-        self.wid = wid
-        self.best: Layout | None = None
-        self.runs = 0
+    def add(mask: np.ndarray) -> dict:
+        nonlocal pos
+        data, words = _pack_rows(mask)
+        off = pos
+        blobs.append(data)
+        pos += len(data)
+        return {"off": off, "words": words}
 
-    def run_for(self, seconds: float) -> dict:
-        """少なくとも 1 回、seconds 秒たつまで探す。戻り値: {"runs": これまでの回数, "best": 良くなったときだけ結果}。"""
-        t_end = time.time() + seconds
-        improved = False
-        while True:
-            run = self.runs if self.wid == 0 else self.runs + 1
-            layout = self.nester.step(self.rng, run, self.best, g_offset=self.wid * 3)
-            self.runs += 1
-            if self.best is None or layout.key() > self.best.key():
-                self.best = layout
-                improved = True
-            if time.time() >= t_end:
-                break
-        return {"runs": self.runs, "best": self.best.to_dict() if improved else None}
+    head = {"v": PAYLOAD_VERSION,
+            "grid": {"x0": grid.x0, "y0": grid.y0, "res": grid.res, "W": grid.W, "H": grid.H},
+            "blocked": add(blocked),
+            "parts": parts,
+            "orients": [{"part": o["part"], "angle": float(o["angle"]), "flip": bool(o["flip"]),
+                         "h": int(o["mask"].shape[0]), "w": int(o["mask"].shape[1]),
+                         "mx0": float(o["mx0"]), "my0": float(o["my0"]), **add(o["mask"])} for o in orients],
+            "params": params}
+    hj = json.dumps(head, separators=(",", ":")).encode("utf-8")
+    hj += b" " * (-len(hj) % 4)
+    return PAYLOAD_MAGIC + struct.pack("<I", len(hj)) + hj + b"".join(blobs)
 
 
-def placements_from_dicts(items) -> list[Placed]:
-    return [Placed(part=int(d["part"]), flip=bool(d["flip"]), angle=float(d["angle"]), tx=float(d["tx"]), ty=float(d["ty"]))
-            for d in items]
-
-
-def nest_once(container, parts: list[NestPart], params: NestParams) -> Layout:
-    """このプロセスだけで計算する（テストや、部材が少ないとき用）。"""
-    nester = RasterNester(container, parts, params)
-    rng = np.random.default_rng(params.seed)
-    best, run = None, 0
-    t_end = time.time() + params.time_limit
-    while True:
-        layout = nester.step(rng, run, best)
-        run += 1
-        if best is None or layout.key() > best.key():
-            best = layout
-        if time.time() >= t_end:
-            return best
+def decode_payload(data: bytes) -> dict:
+    """prepare() のデータを読み戻す（検査用）。画像は uint8 の numpy 配列にする。"""
+    if data[:4] != PAYLOAD_MAGIC:
+        raise ValueError("敷き詰めのデータではありません")
+    (n,) = struct.unpack("<I", data[4:8])
+    head = json.loads(data[8:8 + n].decode("utf-8"))
+    base = 8 + n
+    g = head["grid"]
+    head["blocked_mask"] = _unpack_rows(data, base + head["blocked"]["off"], g["H"], g["W"], head["blocked"]["words"])
+    for o in head["orients"]:
+        o["mask"] = _unpack_rows(data, base + o["off"], o["h"], o["w"], o["words"])
+    return head

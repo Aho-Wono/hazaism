@@ -24,10 +24,10 @@ Web カメラや加工機の中のカメラで直接撮る案は、検討した�
 
 | 項目 | 内容 |
 |---|---|
-| 公開ページ | https://aho-wono.github.io/hazaism/ （v0.5.0） |
+| 公開ページ | https://aho-wono.github.io/hazaism/ （v0.6.0） |
 | スマホの送信ページ | https://aho-wono.github.io/hazaism/send.html （PC の Hazaism の「スマホ」で出る QR から開く） |
 | リポジトリ | https://github.com/Aho-Wono/hazaism （Public、MIT） |
-| しくみ | ブラウザだけで動く。計算は Pyodide（ブラウザの中で動く Python、v314.0.8）。サーバーはなく、GitHub Pages が静的なファイルを配るだけ |
+| しくみ | ブラウザだけで動く。写真の解析・図形・DXF は Pyodide（ブラウザの中で動く Python、v314.0.8）、敷き詰めの探索は JavaScript（0.6.0 から）。サーバーはなく、GitHub Pages が静的なファイルを配るだけ |
 | スマホ → PC | WebRTC で直接つなぐ。互いを見つける仲介だけ PeerJS の公開サーバー（0.peerjs.com）。写真は暗号化されて直接流れる |
 | 公開の手順 | main に push すると、GitHub Actions が検査 → 組み立て → 公開（`.github/workflows/pages.yml`）。数分で反映 |
 | データ | 写真・図面は外へ出ない。作業はブラウザの IndexedDB に保存（ブラウザやパソコンをまたいでは引き継がれない） |
@@ -38,12 +38,13 @@ Web カメラや加工機の中のカメラで直接撮る案は、検討した�
 | 場所 | 中身 |
 |---|---|
 | `hazaism/vision/` | 写真 → 輪郭（格子の検出、真上から見た画像への補正、板の切り出し、直線＋円弧への当てはめ） |
-| `hazaism/nest/` | 敷き詰め（`raster.py` 置ける位置の計算、`engine.py` 探索と作業スレッド用の `NestWorker`、`verify.py` 検査と実測） |
+| `hazaism/nest/` | 敷き詰めの準備（`engine.py` 向きの一覧・格子の画像・JavaScript に渡すデータ、`raster.py` 格子化）と、`verify.py` 検査と実測 |
 | `hazaism/dxfio/` | 部材 DXF の読込、結果の書き出し（端材の輪郭は青の線） |
 | `hazaism/jobs.py`・`webapi.py` | 作業の状態と、画面からの頼みごとの入口 |
 | `hazaism/static/js/app.js` | 画面の流れ、写真の読み込み（`uploadPhoto`）、スマホから届いた写真の扱い（`receivePhoto`） |
-| `hazaism/static/js/backend.js` | 画面とブラウザ内の Python との橋渡し、敷き詰めの作業スレッド（最大 4 本）の指揮 |
-| `hazaism/static/js/py-core-worker.js`・`py-nest-worker.js` | Python を動かす作業スレッド |
+| `hazaism/static/js/backend.js` | 画面とブラウザ内の Python との橋渡し、敷き詰めの作業スレッド（最大 8 本）の指揮 |
+| `hazaism/static/js/py-core-worker.js` | Python を動かす作業スレッド |
+| `hazaism/static/js/nest/engine.js`・`nest-worker.js` | 敷き詰めの探索（JavaScript）と、それを回す作業スレッド |
 | `hazaism/static/js/phone-link.js` | スマホ → PC の送り方の取り決め（両方で使う） |
 | `hazaism/static/js/phone-receive.js` | PC 側の待ち受け、QR の画面、上の帯の「スマホ」ボタン |
 | `hazaism/static/send.html`・`js/send.js`・`css/send.css` | スマホの送信ページ（Python は読まない） |
@@ -57,16 +58,25 @@ SmartDIYs Cutter は DXF のレイヤーではなく**線の色ごと**にレイ
 Hazaism は端材の輪郭を青（AutoCAD の色番号 5）で書き出すので、読み込んだあと「レイヤーパラメータ」で
 青のレイヤーを**「加工なし」**にすれば、部材だけが切られる。切る前に「経路確認」（レーザーを出さずに経路どおり動く）で確かめる。
 
-### 速さ（ノート PC の Chromium で計測）
+### 速さ（ノート PC の Chromium で計測。電源につないだとき）
 
-| 段階 | 電源につないだとき | バッテリーのとき |
+| 段階 | 時間 |
+|---|---|
+| 起動（Python の読み込み） | 10〜20 秒（バッテリーだと 25〜33 秒） |
+| 写真の解析 | 11〜12 秒（バッテリーだと 27〜37 秒） |
+| 敷き詰め（計算 1 秒 / 10 秒の設定。準備と確かめを含む全体） | 3.0 秒 / 12.0 秒（0.5 までは 10 秒の設定で 18〜28 秒）。作業スレッド 8 本で 1 秒あたり約 29 回（0.5 までは 4 本で 0.8 回） |
+| スマホ → PC（つながるまで / 写真 1 枚） | 約 2 秒 / 1 秒前後（同じ PC 内で計測） |
+
+敷き詰めの探索の比較（試験の部材 11 個・約 200 cm² の端材・刻み 2°・作業スレッド 4 本。どちらもこの PC の CPU で直接）:
+
+| | 0.5 まで（Python） | 0.6（JavaScript） |
 |---|---|---|
-| 起動（Python の読み込み） | 16〜20 秒 | 25〜33 秒 |
-| 写真の解析 | 12 秒 | 27〜37 秒 |
-| 敷き詰め（計算 10 秒の設定） | 18〜28 秒（刻み 5°） | 28〜43 秒（43 秒は刻み 2°） |
-| スマホ → PC（つながるまで / 写真 1 枚） | 約 2 秒 / 1 秒前後（同じ PC 内で計測） | ― |
+| 準備 | 1.3〜4 秒 | 0.6 秒（2 回目からは 0.06 秒） |
+| 計算 1 秒 | 4 回・8 個（1 回に数秒かかり、1 秒では終わらない） | 34 回・7 個・58.9 % |
+| 計算 10 秒 | 4 回・8 個・60.3 % | 41 回・9 個・62.3 % |
 
-作業スレッド 1 本で約 350 MB、計算中は全体で 1〜2 GB のメモリを使う。
+ブラウザの中の Python はこれよりさらに 3 倍ほど遅かったので、画面で使ったときの差はもっと大きい。
+敷き詰めの作業スレッドは 1 本数十 MB（0.5 までは Python を読み込むので 1 本 350 MB、起動に約 10 秒）。
 
 ## 3. スマホで撮って送る（0.5.0）
 
@@ -111,6 +121,7 @@ Hazaism は端材の輪郭を青（AutoCAD の色番号 5）で書き出すの�
 
 | 案 | 開発 | 内容 |
 |---|---|---|
+| 敷き詰めをさらに速く | 中くらい | 計算の中心は「置けない位置の形」（向きの組ごと、行×行の区間の足し算）。1〜5 秒の設定では格子を粗くしている（`engine.py` の `target_pixels`）。さらに速くするなら Rust → WebAssembly |
 | PC アプリとしてインストール | 小さい | `index.html` 用の manifest（名前・アイコン・`display: standalone`）を足すと、Chrome/Edge の「アプリとしてインストール」が出る。アイコンは `hazaism/static/icons/` にある。sw.js はすでにある |
 | DXF を Cutter で直接開く | 不要 | 4 節の最後の項目を確かめてから |
 | 自前の仲介サーバー | 中くらい | PeerJS の公開サーバーが不安定なとき。PeerJS Server を Cloudflare などに置き、`new Peer()` の引数で指す |
@@ -146,6 +157,12 @@ uv run playwright install webkit      # スマホの送信ページを Safari �
 - **大きな円での `cv2.dilate` / `cv2.erode` はブラウザ内で極端に遅い**（板の切り出しが 82 秒かかった）。距離変換で同じことをする
 - **GrabCut は OpenCV 共通の乱数を使う**ので、`cv2.setRNGSeed` で種を固定している（固定しないと実行順で結果が変わる）
 - **図の上の文字**は `#layer-labels`（画面の座標の層）に描く。図の中に置くと、拡大したときにふちどりが太って黒くつぶれる
+- **敷き詰めの探索（engine.js）**: 位置 (x, y) は部材のマスクの左上の画素。「置けない位置」B は行ごとに 32 ビットずつ詰めた整数。
+  端材に対する分は「部材の各行の区間が空き区間に収まる x の範囲」、置いた部材に対する分は区間どうしの足し算で求め、
+  後者は向きの組ごとに覚えて使い回す（`nfrShape`）。試す向きは部材ごとの組を 4 分の 1 ずつ入れ替える（毎回ばらばらに選ぶと、
+  覚えた形が使えず 5 倍ほど遅くなった）。正しさは `tests/test_nest_js.py` で 1 画素ずつ調べた答えと比べている
+- **Python → JavaScript のデータ**: `engine.prepare()` が "HZN1" ＋ 見出しの JSON ＋ ビットに詰めた画像を返す。
+  部材は反転ごとに 1 回だけ太らせて（buffer）から回す（向きごとに buffer するのと画素まで同じになることを確かめた）
 - **WebRTC の検査**: 同じ PC の中で 2 つのページをつなぐときは、Chromium を
   `--disable-features=WebRtcHideLocalIpsWithMdns` で起動する（自分の IP を mDNS の名前で隠すと、つながらないことがある）
 - **PeerJS**: スマホ側は、仲介のサーバーと切れても `peer.destroy()` しない（つながっている PC とのやり取りまで切れる）。

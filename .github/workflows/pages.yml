@@ -21,7 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.3     # この action は v8 以降、v10 のような短い版名を出していない
-      - name: Python の検査
+      - name: 検査用のブラウザ
+        # 敷き詰めの探索は JavaScript なので、Chromium の中で動かして確かめる（tests/test_nest_js.py）
+        run: uv run --frozen playwright install --with-deps chromium
+      - name: 検査
         # 画面の通しの検査（test_e2e）と実物の写真の検査は、写真がリポジトリに無いので自動で飛ばされる
         run: uv run --frozen pytest -q
       - name: サイトを組み立てる

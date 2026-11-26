@@ -8,5 +8,3 @@ export const CORE_PACKAGES = [
   ["scipy", "shapely"],
   ["opencv-python"],
 ];
-// 敷き詰めの作業スレッドで読むもの（DXF は扱わないので ezdxf は要らない）
-export const NEST_PACKAGES = ["numpy", "scipy", "shapely", "opencv-python"];

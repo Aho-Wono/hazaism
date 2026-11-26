@@ -183,7 +183,7 @@ def test_reset(client):
 
 
 def test_nest_prepare_finish_and_export(client):
-    """敷き詰めの準備 → 作業スレッドで計算（ここでは同じプロセスで）→ 検査して結果 → DXF の中身。"""
+    """敷き詰めの準備 → 作業スレッドで計算（ここでは手で置いた配置を使う）→ 検査して結果 → DXF の中身。"""
     import ezdxf
 
     import make_parts
@@ -197,13 +197,18 @@ def test_nest_prepare_finish_and_export(client):
     assert r.status == 200 and r.content_type == "application/octet-stream" and len(r.data) > 100
     meta = r.body
     assert meta["qty"] == {str(pid): 3} and meta["scrap_area"] == pytest.approx(16000) and meta["time_limit"] == 5
-    w = engine.NestWorker(r.data, 0)
-    out = w.run_for(0.3)
-    res = client.post("/api/nest/finish", json={"best": out["best"], "stats": {"runs": 7, "elapsed": 2.0, "workers": 1,
-                                                                            "history": [{"t": 0.5, "utilization": 10.0, "placed": 3}]}}).body
-    assert res["placed"] == 3 and res["counts"] == {str(pid): [3, 3]}
+    head = engine.decode_payload(r.data)                      # 作業スレッド（JavaScript）に渡すデータ
+    assert head["parts"][0]["index"] == pid and head["parts"][0]["qty"] == 3 and head["orients"]
+    assert all(o["angle"] % 90 == 0 for o in head["orients"])
+    # 計算の結果の代わりに、間隔 5 mm・余白 5 mm で 3 個並べた配置（gusset は 45 × 40 mm）
+    best = {"placements": [{"part": pid, "flip": False, "angle": 0, "tx": x, "ty": 5} for x in (5, 55, 105)],
+            "placed_area": 0, "leftover": 1234.5, "key": [0, 3, 1235]}
+    res = client.post("/api/nest/finish", json={"best": best, "stats": {"runs": 7, "elapsed": 2.0, "workers": 1, "prepare_s": 0.4,
+                                                                       "history": [{"t": 0.5, "utilization": 10.0, "placed": 3}]}}).body
+    assert res["placed"] == 3 and res["counts"] == {str(pid): [3, 3]} and res["dropped"] == 0
     m = res["metrics"]
     assert m["runs"] == 7 and m["runs_per_sec"] == pytest.approx(3.5) and m["workers"] == 1 and len(m["history"]) == 1
+    assert m["prepare_s"] == 0.4 and m["verify_s"] >= 0 and m["leftover"] == 1234.5
     assert m["min_spacing"] >= 2.0 - 1e-3 and m["min_margin"] >= 2.0 - 1e-3
     assert client.get("/api/state").body["result"]["placed"] == 3        # 保存されている
     # DXF はファイルに書かず、中身を返す。ファイル名の使えない文字は置き換える

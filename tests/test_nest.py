@@ -1,56 +1,18 @@
-"""敷き詰めの検査。"""
-import json
-import math
-from pathlib import Path
+"""敷き詰めの Python 側（向きの一覧・格子の画像・JavaScript に渡すデータ・検査）の検査。
+
+探索そのもの（JavaScript）の検査は test_nest_js.py。
+"""
+import time
 
 import numpy as np
 import pytest
-from shapely import affinity
 from shapely.geometry import Point, Polygon, box
 
 from hazaism.dxfio import reader
-from hazaism.geom import outline as go
 from hazaism.nest import engine, raster, verify
-
-DATA = Path(__file__).resolve().parent / "data"
-
-
-def params(**kw):
-    base = dict(spacing=2.0, margin=2.0, angle_step=15.0, time_limit=4.0, seed=1)
-    base.update(kw)
-    return engine.NestParams(**base)
-
-
-def check(container, parts, layout, prm):
-    polys = {p.index: p.polygon for p in parts}
-    problems = verify.verify(container, polys, layout.placements, prm.spacing, prm.margin)
-    assert not problems, problems
-    for p in parts:
-        n = sum(1 for pl in layout.placements if pl.part == p.index)
-        assert n <= p.qty
-        if not p.allow_flip:
-            assert not any(pl.flip for pl in layout.placements if pl.part == p.index)
-    return polys
 
 
 # ---- 部品 ----
-def test_no_fit_region_matches_brute_force():
-    rng = np.random.default_rng(0)
-    for _ in range(5):
-        a = (rng.random((rng.integers(5, 30), rng.integers(5, 30))) > 0.6).astype(np.uint8)
-        b = (rng.random((rng.integers(4, 20), rng.integers(4, 20))) > 0.6).astype(np.uint8)
-        size = (raster.fft_size(a.shape[0] + b.shape[0] - 1), raster.fft_size(a.shape[1] + b.shape[1] - 1))
-        got = raster.no_fit_region(raster.mask_fft(a, size), raster.mask_fft(b, size), size, a.shape, b.shape)
-        h, w = b.shape
-        pad = np.zeros((a.shape[0] + 2 * (h - 1), a.shape[1] + 2 * (w - 1)), np.uint8)
-        pad[h - 1:h - 1 + a.shape[0], w - 1:w - 1 + a.shape[1]] = a
-        want = np.zeros_like(got)
-        for j in range(got.shape[0]):
-            for i in range(got.shape[1]):
-                want[j, i] = (pad[j:j + h, i:i + w] & b).any()
-        assert (got == want).all()
-
-
 def test_rasterize_respects_holes():
     ring = Point(10, 10).buffer(8).difference(Point(10, 10).buffer(4))
     m = raster.rasterize(ring, 0, 0, 0.5, (40, 40))
@@ -70,6 +32,22 @@ def test_orientations_use_symmetry():
     assert all(not f for _, f in engine.orientations(engine.NestPart(3, ell, 1, allow_flip=False), 90.0))
     assert engine.orientations(engine.NestPart(4, ell, 1, rotation="fixed"), 5.0) == [(0.0, False), (0.0, True)]
     assert len(engine.orientations(engine.NestPart(5, ell, 1, rotation="90", allow_flip=False), 5.0)) == 4
+    # 二等辺三角形は鏡映の軸があるので、裏返しは要らない。軸の向きが試す角度にそろわない形は、裏返しを残す
+    iso = Polygon([(0, 0), (40, 0), (20, 30)])
+    assert all(not f for _, f in engine.orientations(engine.NestPart(6, iso, 1), 15.0))
+    assert any(f for _, f in engine.orientations(engine.NestPart(7, Polygon([(0, 0), (40, 0), (25, 30)]), 1), 15.0))
+
+
+def test_orientation_counts_of_sample_parts():
+    """試験の部材の向きの数（0.5.0 までの Python 版と同じ。対称の調べ方を速くしても変わらないこと）。"""
+    import make_parts
+    make_parts.ensure()
+    want = {"bracket_L.dxf": (360, 180), "gusset.dxf": (360, 180), "flange.dxf": (30, 30), "slot_plate.dxf": (90, 90),
+            "cover_cm.dxf": (180, 180), "mirrored_arc.dxf": (180, 180)}
+    for name, (n_flip, n_noflip) in want.items():
+        poly = reader.load_part(str(make_parts.OUT / name), name).polygon
+        assert len(engine.orientations(engine.NestPart(0, poly, 1), 2.0)) == n_flip, name
+        assert len(engine.orientations(engine.NestPart(0, poly, 1, allow_flip=False), 2.0)) == n_noflip, name
 
 
 def test_transform_matches_dxf_writer(tmp_path):
@@ -86,80 +64,42 @@ def test_transform_matches_dxf_writer(tmp_path):
     assert got.boundary.hausdorff_distance(want.boundary) < 0.05
 
 
-# ---- 敷き詰め ----
-def test_rectangles_fill_a_rectangle():
-    container = box(0, 0, 200, 100)
-    parts = [engine.NestPart(0, box(0, 0, 46, 21.5), qty=16)]
-    prm = params(time_limit=5.0)
-    layout = engine.nest_once(container, parts, prm)
-    check(container, parts, layout, prm)
-    assert len(layout.placements) == 16, "4 × 4 に並ぶはず"
+# ---- JavaScript に渡すデータ ----
+def test_payload_round_trip():
+    """prepare() のデータを読み戻すと、格子と各向きの画像が、図形をそのまま格子にしたものと一致する。"""
+    ring = Point(0, 0).buffer(20, quad_segs=16).difference(Point(0, 0).buffer(8, quad_segs=16))
+    parts = [engine.NestPart(3, box(0, 0, 33, 12), qty=2), engine.NestPart(8, ring, qty=1, allow_flip=False)]
+    container = Polygon([(0, 0), (150, 10), (140, 90), (5, 80)])
+    prm = engine.NestParams(spacing=1.0, margin=2.0, angle_step=30.0, time_limit=3.0, seed=4)
+    data = engine.prepare(container, parts, prm)
+    head = engine.decode_payload(data)
+    grid, blocked = engine.make_grid(container, prm)
+    assert head["grid"] == {"x0": grid.x0, "y0": grid.y0, "res": grid.res, "W": grid.W, "H": grid.H}
+    assert (head["blocked_mask"] == blocked).all()
+    assert [p["index"] for p in head["parts"]] == [3, 8] and [p["qty"] for p in head["parts"]] == [2, 1]
+    assert head["params"]["time_limit"] == 3.0 and head["params"]["seed"] == 4
+    for o in head["orients"]:
+        poly = parts[o["part"]].polygon
+        g = engine.transform_polygon(poly, o["flip"], o["angle"]).buffer(grid.grow, quad_segs=6)
+        want = raster.rasterize(g, o["mx0"], o["my0"], grid.res, (o["h"], o["w"]))
+        assert (o["mask"] == want).all()
+        assert o["off"] % 4 == 0
+    # 向きの番号は部材ごとにまとまっている
+    assert sorted(i for p in head["parts"] for i in p["orients"]) == list(range(len(head["orients"])))
+    # 同じ部材・同じ設定なら、2 回目は覚えておいたものを使うので速く、中身は同じ
+    t = time.time()
+    assert engine.prepare(container, parts, prm) == data
+    assert time.time() - t < 0.5
 
 
-def test_stops_when_nothing_fits():
+def test_parts_too_big_are_left_out():
     container = box(0, 0, 30, 30)
     parts = [engine.NestPart(0, box(0, 0, 60, 60), qty=2), engine.NestPart(1, box(0, 0, 10, 10), qty=1)]
-    prm = params(time_limit=1.0)
-    layout = engine.nest_once(container, parts, prm)
-    check(container, parts, layout, prm)
-    assert [pl.part for pl in layout.placements] == [1]
+    head = engine.decode_payload(engine.prepare(container, parts, engine.NestParams(angle_step=90.0)))
+    assert head["parts"][0]["orients"] == [] and head["parts"][1]["orients"]
 
 
-def test_parts_inside_holes():
-    ring = Point(0, 0).buffer(40, quad_segs=32).difference(Point(0, 0).buffer(26, quad_segs=32))
-    disc = Point(0, 0).buffer(10, quad_segs=32)
-    container = box(0, 0, 88, 88)
-    parts = [engine.NestPart(0, ring, qty=1), engine.NestPart(1, disc, qty=1)]
-    prm = params(time_limit=2.0)
-    layout = engine.nest_once(container, parts, prm)
-    polys = check(container, parts, layout, prm)
-    assert sorted(pl.part for pl in layout.placements) == [0, 1]
-    placed = dict(zip([pl.part for pl in layout.placements], verify.placed_polygons(polys, layout.placements)))
-    assert Polygon(placed[0].exterior).contains(placed[1]), "小さい円板は輪の穴の中に入るはず"
-    # 穴の中を使わない設定では入らない
-    layout2 = engine.nest_once(container, parts, params(time_limit=2.0, use_holes=False))
-    assert [pl.part for pl in layout2.placements] == [0]
-
-
-def test_scrap_outline_with_dxf_parts():
-    shape = json.loads((DATA / "scrap_outline_01.json").read_text(encoding="utf-8"))
-    container = go.shape_to_polygon(shape, 0.02)
-    import make_parts
-    make_parts.ensure()
-    specs = [("bracket_L.dxf", 3, False), ("gusset.dxf", 4, True), ("slot_plate.dxf", 2, True)]
-    parts = [engine.NestPart(i, reader.load_part(str(make_parts.OUT / n), n).polygon, qty=q, allow_flip=f)
-             for i, (n, q, f) in enumerate(specs)]
-    prm = params(spacing=3.0, margin=3.0, angle_step=10.0, time_limit=6.0)
-    layout = engine.nest_once(container, parts, prm)
-    check(container, parts, layout, prm)
-    assert len(layout.placements) >= 4
-    assert layout.placed_area == pytest.approx(sum(parts[pl.part].polygon.area for pl in layout.placements))
-
-
-def test_workers_from_prepared_payload():
-    """ブラウザと同じ流れ: prepare() のデータで作業スレッドを 2 本作り、少しずつ回して、良いほうを採る。"""
-    import json as _json
-    container = box(0, 0, 150, 90)
-    parts = [engine.NestPart(7, box(0, 0, 40, 25), qty=6), engine.NestPart(9, Point(0, 0).buffer(12), qty=4)]
-    prm = params(time_limit=30.0)
-    payload = engine.prepare(container, parts, prm)
-    workers = [engine.NestWorker(payload, wid) for wid in range(2)]
-    best = None
-    for _ in range(4):
-        for w in workers:
-            out = w.run_for(0.2)
-            _json.dumps(out)                     # 画面へ送れる形（JSON にできる）
-            if out["best"] and (best is None or out["best"]["key"] > best["key"]):
-                best = out["best"]
-    assert best is not None and all(w.runs >= 4 for w in workers)
-    layout = engine.Layout(placements=engine.placements_from_dicts(best["placements"]), placed_area=best["placed_area"])
-    check(container, parts, layout, prm)
-    assert len(layout.placements) >= 8
-    assert {pl.part for pl in layout.placements} <= {7, 9}
-    # 2 本は違う乱数で探している（同じ結果ばかりにならない）
-    assert workers[0].rng.random() != workers[1].rng.random()
-
-
+# ---- 検査 ----
 def test_measure_reports_actual_gaps():
     container = box(0, 0, 100, 100)
     polys = {0: box(0, 0, 20, 20)}

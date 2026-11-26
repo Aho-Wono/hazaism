@@ -152,11 +152,20 @@ function accept(conn) {
     if (!conn.open) return;
     try { conn.send(JSON.stringify(obj)); } catch (e) { /* 切れた */ }
   };
-  const feed = createReceiver(send, (id, file) => {
-    const reply = (stage, extra = {}) => send({ t: "status", id, stage, ...extra });
-    reply("received");
-    if (R.onPhoto) R.onPhoto(file, reply);
-    else reply("error", { error: "PC の準備ができていません" });
+  const feed = createReceiver(send, {
+    onStart: (m) => banner("start", m),
+    onProgress: (m) => banner("progress", m),
+    onFail: (m) => banner("fail", m),
+    onFile: (id, file) => {
+      banner("done");
+      const dlg = $("#dlg-phone");
+      if (dlg && dlg.open) dlg.close();          // 受け取れたので QR の画面は閉じる
+      if (document.hidden) markTitle();
+      const reply = (stage, extra = {}) => send({ t: "status", id, stage, ...extra });
+      reply("received");
+      if (R.onPhoto) R.onPhoto(file, reply);
+      else reply("error", { error: "PC の準備ができていません" });
+    },
   });
   conn.on("open", () => {
     R.conns.add(conn);
@@ -164,10 +173,78 @@ function accept(conn) {
   });
   conn.on("data", feed);
   const gone = () => {
+    if (feed.active()) banner("fail", { error: "スマホとのつながりが途中で切れました。もう一度送ってください" });
     if (R.conns.delete(conn)) render();
   };
   conn.on("close", gone);
   conn.on("error", gone);
+}
+
+// ---- 受け取りのお知らせ（画面の上の帯。QR の画面の上にも出るよう、ポップオーバーで最前面に出す） ----
+
+const B = { hideTimer: null, receiving: false, title: null };
+
+function showBanner(el) {
+  if (el.popover !== undefined && typeof el.showPopover === "function") {
+    if (el.matches(":popover-open")) el.hidePopover();       // 開いているダイアログより手前に出し直す
+    el.showPopover();
+  } else {
+    el.hidden = false;
+  }
+}
+
+function hideBanner(el) {
+  if (typeof el.hidePopover === "function" && el.matches(":popover-open")) el.hidePopover();
+  el.hidden = true;
+}
+
+const mb = (n) => (n / 1e6).toLocaleString("ja-JP", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+
+function banner(kind, m = {}) {
+  const el = $("#incoming-banner");
+  if (!el) return;
+  clearTimeout(B.hideTimer);
+  if (kind === "start" || kind === "progress") {
+    const f = m.size ? Math.min(1, (m.got || 0) / m.size) : 0;
+    if (kind === "start" || !B.receiving) {
+      el.className = "incoming-banner busy";
+      $("#incoming-banner-title").textContent = "スマホから写真を受け取っています…";
+      el.hidden = false;
+      showBanner(el);
+    }
+    B.receiving = true;
+    $("#incoming-banner-bar").style.width = `${Math.round(f * 100)}%`;
+    $("#incoming-banner-detail").textContent = `${Math.round(f * 100)} %（${mb(m.got || 0)} / ${mb(m.size || 0)} MB）`;
+  } else if (kind === "done") {
+    B.receiving = false;
+    el.className = "incoming-banner ok";
+    $("#incoming-banner-title").textContent = "スマホから写真を受け取りました";
+    $("#incoming-banner-bar").style.width = "100%";
+    $("#incoming-banner-detail").textContent = "解析を始めます";
+    showBanner(el);
+    B.hideTimer = setTimeout(() => hideBanner(el), 1500);
+  } else if (kind === "fail") {
+    B.receiving = false;
+    el.className = "incoming-banner bad";
+    $("#incoming-banner-title").textContent = "写真を受け取れませんでした";
+    $("#incoming-banner-detail").textContent = m.error || "";
+    showBanner(el);
+    B.hideTimer = setTimeout(() => hideBanner(el), 5000);
+  }
+  render();
+}
+
+// タブが裏にあるとき、タイトルで届いたことを知らせる（タブを見たら戻す）
+function markTitle() {
+  if (B.title === null) B.title = document.title;
+  document.title = `【写真が届きました】${B.title}`;
+}
+
+function restoreTitle() {
+  if (B.title !== null) {
+    document.title = B.title;
+    B.title = null;
+  }
 }
 
 // タブが見えたとき・ネットが戻ったときに、止まっていればすぐやり直す
@@ -202,7 +279,7 @@ function render() {
   const btn = $("#btn-phone");
   if (btn) {
     const cls = { off: "off", connecting: "wait", ready: R.conns.size ? "live" : "ready", taken: "err", error: "err" }[R.state];
-    btn.className = `ghost phone-btn ${cls}`;
+    btn.className = `ghost phone-btn ${B.receiving ? "recv" : cls}`;
     btn.title = R.enabled ? `スマホから送る: ${statusText()}` : "スマホで撮った写真を、この画面へ直接送れるようにします";
   }
   const st = $("#phone-status");
@@ -289,7 +366,11 @@ export function initPhoneReceive(onPhoto) {
     } catch (e) { /* コピーできないブラウザ */ }
   };
   window.addEventListener("online", wake);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) wake(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    restoreTitle();
+    wake();
+  });
   render();
 }
 

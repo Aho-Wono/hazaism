@@ -144,8 +144,14 @@ def test_1_photo(page):
     t = time.time()
     page.set_input_files("#file-photo", str(PHOTO))
     page.wait_for_selector("#busy", state="visible")
+    # 解析が終わるのを待たずに、読み込んだ写真をそのまま見せる
+    page.wait_for_selector("#stage-preview", state="visible", timeout=10_000)
+    assert page.get_attribute("#stage-preview", "src").startswith("blob:")
+    assert "with-preview" in page.get_attribute("#busy", "class")
+    shot(page, "1_photo_analyzing")
     page.wait_for_selector("#busy", state="hidden", timeout=180_000)
     TIMES["写真の解析"] = time.time() - t
+    assert page.is_hidden("#stage-preview")
     st = state(page)
     assert st["photo"]["ok"]
     assert st["photo"]["grid"]["rms"] < 0.3, "格子の当てはめ誤差が大きい"
@@ -309,6 +315,22 @@ def test_3_parts(page):
 def test_4_nest(page):
     page.click("#btn-parts-next")
     page.wait_for_selector("#btn-nest-start")
+    # 計算時間 1 秒: 準備と確かめを入れても数秒で終わる
+    page.select_option("#in-time", "1")
+    t = time.time()
+    page.click("#btn-nest-start")
+    page.wait_for_function("document.querySelector('#btn-nest-start').disabled === true")
+    page.wait_for_function("document.querySelector('#btn-nest-start').disabled === false", timeout=60_000)
+    TIMES["敷き詰め（計算 1 秒の設定）"] = time.time() - t
+    page.wait_for_timeout(300)
+    r1 = state(page)["result"]
+    assert r1 and r1["placed"] >= 3, "1 秒でも何個かは置けるはず"
+    m1 = r1["metrics"]
+    assert 0.8 <= m1["elapsed"] <= 3.0 and m1["runs"] >= m1["workers"] and m1["prepare_s"] >= 0 and m1["verify_s"] >= 0
+    assert "かかった時間" in page.inner_text("#nest-metrics")
+    TIMES["1 秒の設定: 試した置き方"] = m1["runs"]
+    shot(page, "4_nest_1s")
+
     page.select_option("#in-time", "10")
     t = time.time()
     page.click("#btn-nest-start")
@@ -337,7 +359,7 @@ def test_4_nest(page):
     assert m["min_spacing"] is None or m["min_spacing"] >= res["spacing"] - 1e-3
     assert m["min_margin"] >= res["margin"] - 1e-3
     text = page.inner_text("#nest-metrics")
-    for label in ("経過時間", "試した置き方", "作業スレッド", "利用率", "置けた数", "残りの最大のかたまり", "最小の間隔（実測）", "最小の余白（実測）"):
+    for label in ("かかった時間", "試した置き方", "作業スレッド", "利用率", "置けた数", "残りの最大のかたまり", "最小の間隔（実測）", "最小の余白（実測）"):
         assert label in text, label
     assert page.locator("#nest-chart svg circle").count() == len(m["history"])
     page.click("#nest-history summary")
@@ -366,10 +388,13 @@ def test_5_export(page, home):
     # 最初は左上の角が原点: 全体が X のプラス側・Y のマイナス側に入る
     info0 = page.inner_text("#export-frame")
     assert "X 0.0 〜" in info0 and "〜 0.0 mm" in info0, info0
-    assert page.locator('[data-corner="tl"].active').count() == 1
-    # 向きを 90° 回して、原点を左下の角へ
+    # 原点は図の四隅の丸で選ぶ（いまの原点の角は塗りつぶし）
+    assert page.locator("circle.corner-pick").count() == 4
+    assert page.locator('circle.corner-pick.active[data-corner="tl"]').count() == 1
+    # 向きを 90° 回して、図の上で原点を左下の角へ
     page.click("#btn-rot-p90")
-    page.click('[data-corner="bl"]')
+    page.click('circle.corner-pick[data-corner="bl"]')
+    assert page.locator('circle.corner-pick.active[data-corner="bl"]').count() == 1
     out = save_dxf(page, home, "result")          # 拡張子は付けてくれる
     assert out.name == "result.dxf"
     shot(page, "5_export")
@@ -508,10 +533,14 @@ def test_7b_phone_send(page):
         t = time.time()
         ph.set_input_files("#in-pick", str(PHOTO))
         page.wait_for_selector("#dlg-incoming[open]", timeout=60_000)
+        # 受け取ったことが PC の画面の上の帯で分かる（受け取り中 → 受け取りました）
+        assert "ok" in page.get_attribute("#incoming-banner", "class")
+        assert "受け取りました" in page.inner_text("#incoming-banner-title")
         ph.wait_for_function("document.querySelector('#job-title').textContent.includes('確認を待って')")
         assert "輪郭" in page.inner_text("#dlg-incoming") or "敷き詰め" in page.inner_text("#dlg-incoming")
         shot(page, "7_incoming")
         page.click("#btn-incoming-load")
+        page.wait_for_selector("#stage-preview", state="visible", timeout=10_000)      # 解析中も写真が見える
         ph.wait_for_selector("#result .msg.ok", timeout=180_000)
         TIMES["スマホから送って解析まで（確認を除く）"] = time.time() - t
         text = ph.inner_text("#result")
@@ -520,8 +549,13 @@ def test_7b_phone_send(page):
         assert st["step"] == "photo" and st["photo"]["ok"] and st["result"] is None
         ph.screenshot(path=str(OUT / "7_phone_done.png"))
 
-        # 2 回目: 写真の画面で手を入れていないので、確かめずにそのまま読み込む
+        # 2 回目: 写真の画面で手を入れていないので、確かめずにそのまま読み込む。
+        # QR の画面を開いたままでも、受け取ったら自動で閉じる
+        page.wait_for_selector("#busy", state="hidden", timeout=60_000)
+        page.click("#btn-phone")
+        page.wait_for_selector("#dlg-phone[open]")
         ph.set_input_files("#in-shoot", str(PHOTO))
+        page.wait_for_function("!document.querySelector('#dlg-phone').open", timeout=60_000)
         ph.wait_for_function("document.querySelector('#job-title').textContent.includes('解析')", timeout=60_000)
         assert not page.is_visible("#dlg-incoming")
         ph.wait_for_selector("#result .msg.ok", timeout=180_000)

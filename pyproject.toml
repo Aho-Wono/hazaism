@@ -1,6 +1,6 @@
 [project]
 name = "hazaism"
-version = "0.5.0"
+version = "0.6.0"
 description = "端材の写真から輪郭を起こし、部材 DXF を敷き詰めてレーザーカッター用 DXF を作る（ブラウザだけで動く）"
 requires-python = ">=3.12,<3.15"
 # ブラウザでは Pyodide 同梱のものと、配っている ezdxf の wheel を使う。ここに書くのは手元の検査用

@@ -295,7 +295,7 @@ class Job:
         self._persist()
 
     # ---- 敷き詰め ----
-    # 計算そのものはブラウザの作業スレッド（engine.NestWorker）で回す。ここでは準備と、終わったあとの検査をする
+    # 計算そのものはブラウザの作業スレッド（JavaScript: static/js/nest/engine.js）で回す。ここでは準備と、終わったあとの検査をする
     def nest_prepare(self, shape: dict, params: dict) -> tuple[dict, bytes]:
         """敷き詰めの準備。戻り値: (画面で途中経過を出すための情報, 作業スレッドに配るデータ)。"""
         shape = go.normalize_shape(shape)
@@ -334,6 +334,7 @@ class Job:
         if req is None:
             raise ValueError("敷き詰めの準備ができていません。もう一度「敷き詰める」を押してください")
         prm = req["params"]
+        t0 = time.time()
         placements = engine.placements_from_dicts(best["placements"]) if best else []
         placements, dropped = verify.drop_invalid(req["container"], req["polys"], placements, prm.spacing, prm.margin)
         counts: dict[int, int] = {}
@@ -351,6 +352,9 @@ class Job:
             "min_margin": None if measured["min_margin"] is None else round(measured["min_margin"], 2),
         }
         metrics["runs_per_sec"] = round(metrics["runs"] / metrics["elapsed"], 2) if metrics["elapsed"] > 0 else 0.0
+        if "prepare_s" in stats:                     # かかった時間の内訳（準備・計算・確かめ）
+            metrics["prepare_s"] = round(float(stats["prepare_s"]), 2)
+            metrics["verify_s"] = round(time.time() - t0, 2)
         res = {
             "placements": [{"part": p.part, "flip": p.flip, "angle": p.angle, "tx": round(p.tx, 4), "ty": round(p.ty, 4)}
                            for p in placements],

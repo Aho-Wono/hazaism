@@ -77,18 +77,14 @@ export async function imageUrl(path, key) {
 
 const N = { workers: [], warming: null, run: null };
 
-// 作業スレッドの本数。1 本あたり 350 MB ほど使うので、メモリが少ない端末では減らす
+// 作業スレッドの本数。計算は JavaScript で 1 本あたり数十 MB なので、CPU の数で決める（画面と写真の解析に 1 つ残す）
 export function nestWorkerCount() {
   const hc = navigator.hardwareConcurrency || 4;
-  let k = Math.max(1, Math.min(4, hc - 1));
-  const dm = navigator.deviceMemory;          // Chrome/Edge だけが返す（GB、最大 8）
-  if (dm && dm <= 4) k = Math.min(k, 2);
-  if (dm && dm <= 2) k = 1;
-  return k;
+  return Math.max(1, Math.min(8, hc - 1));
 }
 
 function spawnNestWorker(i) {
-  const w = new Worker(new URL("./py-nest-worker.js", import.meta.url), { type: "module" });
+  const w = new Worker(new URL("./nest-worker.js", import.meta.url), { type: "module" });
   const rec = { w, i, alive: true, onTick: null, onDone: null };
   rec.ready = new Promise((resolve) => {
     w.onmessage = (e) => {
@@ -104,11 +100,11 @@ function spawnNestWorker(i) {
       if (rec.onDone) rec.onDone({ type: "error", wid: i, runs: 0, error: "作業スレッドが止まりました（メモリ不足の可能性があります）" });
     };
   });
-  w.postMessage({ cmd: "init", build: site.build });
+  w.postMessage({ cmd: "init" });
   return rec;
 }
 
-// 敷き詰めの画面に入る前に、作業スレッドを立てて Python を読み込んでおく
+// 敷き詰めの画面に入る前に、作業スレッドを立てておく（軽いので一瞬）
 export function warmNest() {
   if (N.warming) return N.warming;
   const k = nestWorkerCount();
@@ -171,7 +167,7 @@ async function nestStart(body) {
   const run = {
     active: true, phase: "prepare", stopped: false, error: null, meta: null, best: null, result: null,
     runs: new Map(), history: [], timeLimit: Number(params.time_limit) || 30, workers: 0,
-    computeStart: 0, computeEnd: 0,
+    computeStart: 0, computeEnd: 0, t0: Date.now(), prepareS: 0,
   };
   N.run = run;
   (async () => {
@@ -181,6 +177,7 @@ async function nestStart(body) {
       const meta = r.json ? JSON.parse(r.json) : null;
       if (r.status >= 400) throw new Error((meta && meta.detail) || `エラー (${r.status})`);
       run.meta = meta;
+      run.prepareS = (Date.now() - run.t0) / 1000;
       const payload = r.data;
       run.phase = "warmup";
       const workers = await warm;
@@ -209,11 +206,12 @@ async function nestStart(body) {
           resolve();
         };
         const copy = payload.slice();
-        rec.w.postMessage({ cmd: "start", payload: copy, wid, deadline, chunk: 0.4 }, [copy.buffer]);
+        // 途中報告の間隔: 短い計算時間でも、何度か推移が見えるように
+        rec.w.postMessage({ cmd: "start", payload: copy, wid, deadline, chunk: Math.min(0.4, run.timeLimit / 4) }, [copy.buffer]);
       })));
       run.computeEnd = Date.now();
       run.phase = "verify";
-      const stats = { runs: totalRuns(run), elapsed: elapsed(run), workers: run.workers, history: run.history };
+      const stats = { runs: totalRuns(run), elapsed: elapsed(run), workers: run.workers, history: run.history, prepare_s: run.prepareS };
       const f = await call("POST", "/api/nest/finish", { best: run.best, stats });
       const res = f.json ? JSON.parse(f.json) : null;
       if (f.status >= 400) throw new Error((res && res.detail) || `エラー (${f.status})`);

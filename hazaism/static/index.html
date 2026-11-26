@@ -40,6 +40,7 @@
       <button class="ghost small" id="btn-fit" title="全体を表示">全体</button>
       <span class="coords" id="coords"></span>
     </div>
+    <img class="stage-preview" id="stage-preview" alt="" hidden>
     <div class="dropzone" id="dropzone" hidden>ここにドロップ</div>
     <div class="parts-board" id="parts-board" hidden></div>
     <div class="busy" id="busy" hidden>
@@ -160,8 +161,9 @@
           <option value="10">10°</option><option value="15">15°</option><option value="45">45°</option><option value="90">90°</option>
         </select></span></label>
         <label>計算時間 <span><select id="in-time">
+          <option value="1">1 秒</option><option value="3">3 秒</option><option value="5">5 秒</option>
           <option value="10">10 秒</option><option value="30">30 秒</option><option value="60">1 分</option>
-          <option value="180">3 分</option><option value="600">10 分</option>
+          <option value="180">3 分</option>
         </select></span></label>
         <label class="check"><input type="checkbox" id="in-holes"> 他の部材の穴の中にも置く</label>
       </div>
@@ -202,13 +204,7 @@
         <button id="btn-rot-180">180°</button>
         <label>角度 <input type="number" id="in-export-angle" step="0.1"> °</label>
       </div>
-      <div class="row corners" title="いまの向きで、端材を囲む四角の角を原点にします">
-        <span>原点を角へ</span>
-        <button data-corner="tl">左上</button>
-        <button data-corner="tr">右上</button>
-        <button data-corner="bl">左下</button>
-        <button data-corner="br">右下</button>
-      </div>
+      <p class="note">図の点線は、いまの向きで端材を囲む四角です。<b>四隅の丸をクリック</b>すると、その角が原点になります（最初は左上の角）。</p>
       <div id="export-frame" class="info"></div>
       <h3>内容</h3>
       <label class="check"><input type="checkbox" id="in-include-scrap"> 端材の輪郭も入れる</label>
@@ -292,6 +288,16 @@
     <button class="primary" id="btn-incoming-load">読み込む</button>
   </div>
 </dialog>
+
+<!-- スマホから受け取っている間のお知らせ（ポップオーバーで、開いているダイアログより手前に出す） -->
+<div class="incoming-banner" id="incoming-banner" popover="manual" role="status" aria-live="polite" hidden>
+  <svg class="incoming-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="2.5" width="11" height="19" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10.5 18.5h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+  <div class="incoming-body">
+    <div class="incoming-title" id="incoming-banner-title"></div>
+    <div class="progress"><div class="bar" id="incoming-banner-bar"></div></div>
+    <div class="incoming-detail" id="incoming-banner-detail"></div>
+  </div>
+</div>
 
 <div id="toasts"></div>
 <script type="module" src="js/app.js"></script>

@@ -140,6 +140,29 @@ async function toJpeg(file) {
   return new File([blob], (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" });
 }
 
+// 解析が終わるまでのあいだ、読み込んだ写真をそのまま図の場所に見せる（開けない形式なら見せない）
+function showPreview(file) {
+  const img = $("#stage-preview");
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    if (img.dataset.url !== url) return;
+    img.hidden = false;
+    $("#busy").classList.add("with-preview");
+  };
+  img.onerror = () => { img.hidden = true; };
+  img.dataset.url = url;
+  img.src = url;
+  return () => {
+    if (img.dataset.url === url) {
+      img.hidden = true;
+      img.removeAttribute("src");
+      delete img.dataset.url;
+      $("#busy").classList.remove("with-preview");
+    }
+    URL.revokeObjectURL(url);
+  };
+}
+
 // 戻り値: { info }（解析した結果）か { error }（読めなかった）
 async function uploadPhoto(file) {
   const send = (f) => {
@@ -147,6 +170,7 @@ async function uploadPhoto(file) {
     fd.append("file", f, f.name || "photo.jpg");
     return api("POST", "/api/photo", fd);
   };
+  const hidePreview = showPreview(file);
   try {
     const info = await withBusy("写真を解析しています…（20 秒ほどかかります）", async () => {
       try {
@@ -167,6 +191,8 @@ async function uploadPhoto(file) {
   } catch (e) {
     toast(e.message, "bad", 6000);
     return { error: e.message };
+  } finally {
+    hidePreview();
   }
 }
 
@@ -201,7 +227,6 @@ function photoSummary(r) {
 
 async function loadFromPhone(file, reply) {
   reply("analyzing");
-  toast("スマホから写真が届きました", "ok");
   const r = await uploadPhoto(file);
   reply("done", photoSummary(r));
 }

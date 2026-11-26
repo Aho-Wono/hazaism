@@ -94,12 +94,18 @@ function toArrayBuffer(data) {
 
 // ---- 受け取る側（PC） -------------------------------------------------------------------
 
-// 戻り値: 届いたものを渡す関数 feed(data)。写真がそろったら onFile(id, File) を呼ぶ
+// 戻り値: 届いたものを渡す関数 feed(data)。feed.active() は受け取りの途中か
 //   sendText(obj): 相手へ合図を送る
-export function createReceiver(sendText, onFile) {
+//   on: { onStart({id, name, size}), onProgress({id, got, size}), onFile(id, File), onFail({id, error}) }
+//       （関数を 1 つだけ渡すと onFile とみなす）
+export function createReceiver(sendText, on) {
+  const h = typeof on === "function" ? { onFile: on } : on || {};
   let cur = null;
   let chain = Promise.resolve();
-  const fail = (id, error) => sendText({ t: "status", id, stage: "error", error });
+  const fail = (id, error) => {
+    sendText({ t: "status", id, stage: "error", error });
+    if (h.onFail) h.onFail({ id, error });
+  };
 
   async function step(data) {
     if (typeof data === "string") {
@@ -111,13 +117,14 @@ export function createReceiver(sendText, onFile) {
         if (!(size > 0)) return fail(m.id, "写真が空です");
         if (size > MAX_BYTES) return fail(m.id, `写真が大きすぎます（${Math.round(MAX_BYTES / 1e6)} MB まで）`);
         cur = { id: String(m.id), name: m.name, size, buf: new Uint8Array(size), got: 0, nextAck: ACK_EVERY };
+        if (h.onStart) h.onStart({ id: cur.id, name: cur.name, size });
       } else if (m.t === "end" && cur && m.id === cur.id) {
         const c = cur;
         cur = null;
         if (c.got !== c.size) return fail(c.id, "写真が途中で途切れました。もう一度送ってください");
         const type = sniffImage(c.buf);
         if (!type) return fail(c.id, "画像ではないファイルです");
-        onFile(c.id, new File([c.buf], safeName(c.name, type), { type }));
+        if (h.onFile) h.onFile(c.id, new File([c.buf], safeName(c.name, type), { type }));
       }
       return;
     }
@@ -131,6 +138,7 @@ export function createReceiver(sendText, onFile) {
     }
     cur.buf.set(new Uint8Array(ab), cur.got);
     cur.got += ab.byteLength;
+    if (h.onProgress) h.onProgress({ id: cur.id, got: cur.got, size: cur.size });
     if (cur.got >= cur.nextAck || cur.got === cur.size) {
       sendText({ t: "ack", id: cur.id, bytes: cur.got });
       while (cur.nextAck <= cur.got) cur.nextAck += ACK_EVERY;
@@ -138,9 +146,11 @@ export function createReceiver(sendText, onFile) {
   }
 
   // Blob で届いたときの読み出しは非同期なので、届いた順に 1 つずつ処理する
-  return (data) => {
+  const feed = (data) => {
     chain = chain.then(() => step(data)).catch((e) => console.warn("phone-link receive", e));
   };
+  feed.active = () => cur !== null;
+  return feed;
 }
 
 // ---- 送る側（スマホ） -------------------------------------------------------------------

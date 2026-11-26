@@ -46,8 +46,8 @@ function table(result) {
 }
 
 const PHASE = {
-  prepare: "準備しています…（部材の向きごとの計算）",
-  warmup: "敷き詰めの作業スレッドを起動しています…（初回は 30 秒ほど）",
+  prepare: "準備しています…（部材の向きごとの画像を作っています）",
+  warmup: "敷き詰めの作業スレッドを起動しています…",
   verify: "結果を検査しています…",
 };
 
@@ -66,7 +66,13 @@ function showMetrics(st, r, running) {
   const history = running ? st.history : m.history;
   if (!r && !running) { el.replaceChildren(); $("#nest-chart").replaceChildren(); $("#nest-history").hidden = true; return; }
   const rows = [];
-  if (elapsed !== undefined) rows.push(metric("経過時間", `${fmt(elapsed || 0, 1)} 秒`, running ? `/ ${fmt(st.time_limit, 0)} 秒` : ""));
+  if (!running && m.prepare_s !== undefined && m.verify_s !== undefined) {
+    // 計算時間のほかに、準備（部材の画像づくり）と確かめ（元の図形での検査）にかかった時間
+    const total = m.prepare_s + (elapsed || 0) + m.verify_s;
+    rows.push(metric("かかった時間", `${fmt(total, 1)} 秒`, `準備 ${fmt(m.prepare_s, 1)}・計算 ${fmt(elapsed || 0, 1)}・確かめ ${fmt(m.verify_s, 1)}`));
+  } else if (elapsed !== undefined) {
+    rows.push(metric("経過時間", `${fmt(elapsed || 0, 1)} 秒`, running ? `/ ${fmt(st.time_limit, 0)} 秒` : ""));
+  }
   if (runs !== undefined) rows.push(metric("試した置き方", `${runs || 0} 通り`, rps ? `1 秒あたり ${fmt(rps, 1)}` : ""));
   if (workers) rows.push(metric("作業スレッド", `${workers} 本`));
   if (r) {
@@ -135,7 +141,7 @@ async function poll() {
   if (st.state === "done") S.result = st.result || null;
   show(st);
   nav.refresh();
-  if (st.state === "running") timer = setTimeout(poll, 600);
+  if (st.state === "running") timer = setTimeout(poll, st.time_limit && st.time_limit <= 5 ? 200 : 500);
 }
 
 async function start() {
@@ -150,7 +156,7 @@ async function start() {
   }
   show({ state: "running", phase: "prepare", elapsed: 0, time_limit: params.time_limit, runs: 0, result: null, history: [] });
   nav.refresh();
-  timer = setTimeout(poll, 400);
+  timer = setTimeout(poll, 200);
 }
 
 export function initNest() {
