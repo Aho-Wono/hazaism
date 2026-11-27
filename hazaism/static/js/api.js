@@ -46,10 +46,22 @@ export async function apiRaw(method, url, body) {
   return { json: data, data: r.data || null, ctype: r.ctype || null };
 }
 
-export function toast(msg, kind = "", ms = 3500) {
+// action: { label, onClick } を渡すと、お知らせにボタンを付ける（押すとお知らせは消える）
+export function toast(msg, kind = "", ms = 3500, action = null) {
   const el = document.createElement("div");
   el.className = "toast " + kind;
   el.textContent = msg;
+  if (action) {
+    el.classList.add("has-action");
+    const b = document.createElement("button");
+    b.className = "toast-action";
+    b.textContent = action.label;
+    b.onclick = () => {
+      el.remove();
+      action.onClick();
+    };
+    el.append(b);
+  }
   document.getElementById("toasts").appendChild(el);
   setTimeout(() => el.remove(), ms);
 }

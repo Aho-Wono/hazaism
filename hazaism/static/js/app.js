@@ -2,6 +2,7 @@
 
 import { $, $$, api, fmt, isBusy, setBusyText, svg, toast, withBusy } from "./api.js";
 import { imageUrl, nestRunning, site, startCore } from "./backend.js";
+import { initChangelog } from "./changelog.js";
 import { S, clearLayers, initCtx, layers, msgHtml, nav, screenLabel, setHint, vp } from "./ctx.js";
 import { enterExport, initExport, leaveExport, resetExportFrame } from "./export.js";
 import { enterNest, initNest, leaveNest } from "./nest-view.js";
@@ -403,6 +404,7 @@ async function main() {
     return;
   }
   $("#version").textContent = site.version ? `v${site.version}` : "";
+  initChangelog(site.version);
 
   try {
     const st = await api("GET", "/api/state");

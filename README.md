@@ -26,6 +26,7 @@
 ## 使い方
 
 右上の「最初から」で写真と輪郭を消して次の端材に進めます（登録した部材を残すか消すかを選べます）。
+右上の版の番号（v0.6.1 など）を押すと、版ごとに変わったこと（[更新履歴](CHANGELOG.md)）が見られます。新しい版になってから初めて開いたときは、画面の下でお知らせします。
 
 ### 1 写真
 
@@ -177,7 +178,7 @@ uv run python tools/make_icons.py      # アイコンを作り直す（hazaism/s
 写真を置いたときだけ走ります（この写真はリポジトリには入っていません）。
 
 main に push すると、GitHub Actions が検査してからサイトを組み立てて GitHub Pages に置きます（`.github/workflows/pages.yml`）。
-版を上げるときは `pyproject.toml` の `version` を変えます（画面の右上に出ます）。Pyodide の版は `hazaism/static/js/pyconfig.js` です。
+版を上げるときは `pyproject.toml` の `version` を変え（画面の右上に出ます）、`CHANGELOG.md` の先頭に変わったことを書きます（書き方はファイルの中の例のとおり。書き忘れると `tests/test_changelog.py` が知らせます）。Pyodide の版は `hazaism/static/js/pyconfig.js` です。
 
 ```
 hazaism/
@@ -193,10 +194,11 @@ hazaism/
     js/nest-worker.js   敷き詰めの作業スレッド（engine.js を回す。何本か並列）
     js/phone-link.js    スマホ → パソコンの写真の受け渡し（送り方の取り決め。両方で使う）
     js/phone-receive.js パソコン側の待ち受けと QR の画面
+    js/changelog.js     更新履歴の画面（CHANGELOG.md を読んで表示する）
     send.html, js/send.js  スマホの送信ページ（Python は読まない軽いページ）
     js/vendor/          同梱したライブラリ（PeerJS 1.5.5、qrcode-generator 2.0.4。どちらも MIT）
     sw.js               読み込んだファイルをブラウザに残す（2 回目から速く開く）
-tools/build_site.py   公開するサイトを組み立てる
+tools/build_site.py   公開するサイトを組み立てる（CHANGELOG.md も入れる）
 tools/make_icons.py   アイコンを作る
 ```
 

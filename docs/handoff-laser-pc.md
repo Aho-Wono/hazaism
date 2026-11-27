@@ -24,7 +24,8 @@ Web カメラや加工機の中のカメラで直接撮る案は、検討した�
 
 | 項目 | 内容 |
 |---|---|
-| 公開ページ | https://aho-wono.github.io/hazaism/ （v0.6.0） |
+| 公開ページ | https://aho-wono.github.io/hazaism/ （v0.6.1） |
+| 更新履歴 | `CHANGELOG.md`（画面では右上の版の番号を押すと開く） |
 | スマホの送信ページ | https://aho-wono.github.io/hazaism/send.html （PC の Hazaism の「スマホ」で出る QR から開く） |
 | リポジトリ | https://github.com/Aho-Wono/hazaism （Public、MIT） |
 | しくみ | ブラウザだけで動く。写真の解析・図形・DXF は Pyodide（ブラウザの中で動く Python、v314.0.8）、敷き詰めの探索は JavaScript（0.6.0 から）。サーバーはなく、GitHub Pages が静的なファイルを配るだけ |
@@ -49,7 +50,8 @@ Web カメラや加工機の中のカメラで直接撮る案は、検討した�
 | `hazaism/static/js/phone-receive.js` | PC 側の待ち受け、QR の画面、上の帯の「スマホ」ボタン |
 | `hazaism/static/send.html`・`js/send.js`・`css/send.css` | スマホの送信ページ（Python は読まない） |
 | `hazaism/static/js/vendor/` | 同梱したライブラリ（PeerJS 1.5.5、qrcode-generator 2.0.4。出典とライセンスは `LICENSES.txt`） |
-| `tools/build_site.py` | 公開するサイトを `site/` に組み立てる |
+| `hazaism/static/js/changelog.js` | 更新履歴の画面（`CHANGELOG.md` を読んで表示、新しい版になったら知らせる） |
+| `tools/build_site.py` | 公開するサイトを `site/` に組み立てる（`CHANGELOG.md` も入れる） |
 | `tools/make_icons.py` | アイコン（`hazaism/static/icons/`）を作る |
 
 ### SmartDIYs Cutter で使うとき
@@ -148,7 +150,9 @@ uv run playwright install webkit      # スマホの送信ページを Safari �
   git config user.email "121322339+Aho-Wono@users.noreply.github.com"
   ```
 - push には GitHub へのログインが要る（初回の push でログインの窓が出る）
-- 版を上げるときは `pyproject.toml` の `version`（`uv lock` で uv.lock も合わせる）。Pyodide の版は `hazaism/static/js/pyconfig.js`
+- 版を上げるときは `pyproject.toml` の `version`（`uv lock` で uv.lock も合わせる）と、`CHANGELOG.md` の先頭に
+  「## 版（日付）見出し」と変わったことを書く（使う人向けの言葉で。書き忘れると `tests/test_changelog.py` が落ちる）。
+  Pyodide の版は `hazaism/static/js/pyconfig.js`
 
 ## 7. これまでに分かった注意点
 

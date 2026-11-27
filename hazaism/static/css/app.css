@@ -68,7 +68,15 @@ input:focus, select:focus, button:focus-visible { outline: 2px solid #93b4ff; ou
 .brand { font-weight: 700; font-size: 16px; letter-spacing: .02em; }
 .brand-sub { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: 4px; letter-spacing: .1em; }
 .steps { display: flex; gap: 4px; flex: 1; }
-.version { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* 版の番号（押すと更新履歴）。新しい版になって、まだ更新履歴を見ていないときは青い点 */
+button.version { position: relative; border-color: transparent; background: transparent; padding: 4px 8px;
+  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+button.version:empty { display: none; }
+button.version:hover:not(:disabled) { background: rgba(0, 0, 0, .06); border-color: transparent; color: var(--ink);
+  text-decoration: underline; text-underline-offset: 3px; }
+button.version.has-news { color: var(--accent); font-weight: 600; }
+button.version.has-news::after { content: ""; position: absolute; top: 2px; right: 1px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
 
 .steps button {
   border: none; background: transparent; border-radius: 999px; padding: 5px 14px 5px 6px;
@@ -283,6 +291,29 @@ dialog h3 { margin: 0 0 8px; font-size: 16px; }
 .toast { background: #1f2937; color: #fff; padding: 9px 16px; border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .3); font-size: 13.5px; max-width: 70vw; }
 .toast.bad { background: #b42318; }
 .toast.ok { background: #067647; }
+.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
+.toast-action { border-color: rgba(255, 255, 255, .45); background: transparent; color: #fff; padding: 4px 10px; font-size: 13px; font-weight: 600; }
+.toast-action:hover:not(:disabled) { background: rgba(255, 255, 255, .14); border-color: #fff; }
+
+/* ---- 更新履歴 ---- */
+#dlg-changes { width: min(620px, calc(100vw - 32px)); max-width: none; }
+#dlg-changes > .note { margin-top: 0; }
+.changes-body { max-height: min(64vh, 620px); overflow-y: auto; margin: 0 -22px; padding: 0 22px;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); overscroll-behavior: contain; }
+.change { padding: 14px 0 6px; }
+.change + .change { border-top: 1px dashed var(--line); }
+.change-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.change-ver { font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+.change-date { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.change-tag { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+.change-tag.new { background: var(--accent); color: var(--accent-ink); }
+.change-tag.now { background: var(--accent-soft); color: #1d3fae; }
+.change-title { margin: 4px 0 2px; font-size: 14px; }
+.change p { margin: 6px 0; line-height: 1.65; font-size: 13px; }
+.change ul { margin: 6px 0 8px; padding-left: 1.3em; }
+.change li { margin: 4px 0; line-height: 1.65; font-size: 13px; }
+.change li ul { margin: 2px 0; }
+.change a { color: var(--accent); word-break: break-all; }
 
 /* ---- 敷き詰めの数値 ---- */
 .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; }

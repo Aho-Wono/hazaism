@@ -19,7 +19,7 @@
     <button data-step="export"><span class="num">5</span>出力</button>
   </nav>
   <button class="ghost phone-btn off" id="btn-phone"><span class="dot"></span>スマホ</button>
-  <span class="version" id="version"></span>
+  <button class="version" id="version" title="更新履歴（版ごとに変わったこと）を見る"></button>
   <button class="ghost" id="btn-reset" title="写真や輪郭を消して最初から始めます">最初から</button>
 </header>
 
@@ -276,6 +276,15 @@
       <button id="btn-phone-regen">QR を作り直す</button>
       <button class="primary" id="btn-phone-close">閉じる</button>
     </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-changes" aria-labelledby="changes-heading">
+  <h3 id="changes-heading">更新履歴</h3>
+  <p class="note">版ごとに変わったことです。新しい版ほど上にあります。</p>
+  <div class="changes-body" id="changes-body"></div>
+  <div class="row end">
+    <button class="primary" id="btn-changes-close">閉じる</button>
   </div>
 </dialog>
 

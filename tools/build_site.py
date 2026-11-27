@@ -2,6 +2,7 @@
 
   site/
     index.html, css/, js/, sw.js    ← hazaism/static をそのまま
+    CHANGELOG.md                     ← 更新履歴（画面の右上の版の番号を押すと見られる）
     py/hazaism.zip                 ← ブラウザ内の Python が読み込むプログラム（hazaism パッケージ）
     py/ezdxf-<版>-py3-none-any.whl  ← Pyodide に同梱されていないので一緒に配る（uv.lock と同じ版・同じハッシュ）
     version.json                     ← 版と、中身から作った build 番号（ブラウザに古いものを使わせないため）
@@ -77,6 +78,7 @@ def build(out: Path) -> dict:
     if out.exists():
         shutil.rmtree(out)
     shutil.copytree(STATIC, out, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copy2(ROOT / "CHANGELOG.md", out / "CHANGELOG.md")
     (out / "py").mkdir()
     zdata = package_zip()
     (out / "py" / "hazaism.zip").write_bytes(zdata)

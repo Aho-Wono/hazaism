@@ -457,6 +457,38 @@ def test_6_reload_restores(page):
     assert not page.errors, page.errors
 
 
+def test_6b_changelog(page):
+    """右上の版の番号で更新履歴が開く。新しい版になってから初めて開いたときは知らせる（初めて使うときは知らせない）。"""
+    version = page.inner_text("#version").lstrip("v")
+    seen = "hazaism.seenVersion"
+    assert page.evaluate(f"localStorage.getItem('{seen}')") == version         # 初めて開いたときに、黙って覚えている
+    assert "has-news" not in page.get_attribute("#version", "class")
+    page.click("#version")
+    page.wait_for_selector("#dlg-changes[open] .change")
+    assert page.get_attribute("#dlg-changes .change", "data-version") == version     # いまの版が先頭
+    assert page.locator("#dlg-changes .change.is-current").count() == 1
+    assert page.locator("#dlg-changes .change.is-new").count() == 0
+    assert page.locator("#dlg-changes .change").count() >= 6
+    shot(page, "changelog")
+    page.click("#btn-changes-close")
+
+    # 前に見た版を古くして開き直す → 知らせが出て、版の番号に点。知らせのボタンで開くと、見ていない版に「新しい」
+    page.evaluate(f"localStorage.setItem('{seen}', '0.5.0')")
+    page.reload()
+    wait_ready(page)
+    page.wait_for_selector(".toast.has-action:has-text('新しい版')", timeout=10_000)
+    assert "has-news" in page.get_attribute("#version", "class")
+    page.click(".toast.has-action .toast-action")
+    page.wait_for_selector("#dlg-changes[open] .change")
+    newer = page.eval_on_selector_all("#dlg-changes .change.is-new", "els => els.map(e => e.dataset.version)")
+    assert version in newer and "0.6.0" in newer and "0.5.0" not in newer, newer
+    page.click("#btn-changes-close")
+    assert "has-news" not in page.get_attribute("#version", "class")
+    assert page.evaluate(f"localStorage.getItem('{seen}')") == version
+    assert page.locator(".toast.has-action").count() == 0
+    assert not page.errors, page.errors
+
+
 def test_7a_phone_protocol(page):
     """スマホ → PC の送り方の取り決め（ネットを使わず、ページの中で送る側と受ける側を直結する）。"""
     r = page.evaluate("""async () => {
